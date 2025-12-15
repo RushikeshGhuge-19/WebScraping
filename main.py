@@ -1,125 +1,154 @@
-import requests
+"""Run the ScraperEngine over local samples and optionally save results.
+
+Usage:
+  python main.py --out results.csv
+"""
+import argparse
 import csv
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+import json
+from pathlib import Path
+from pprint import pprint
+from car_scraper.engine import ScraperEngine
 
-# =====================================================
-# CONFIG
-# =====================================================
 
-BASE_URL = "https://books.toscrape.com/"
-START_PAGE = "catalogue/page-1.html"
-MAX_PAGES = 3              # increase slowly while learning
-OUTPUT_FILE = "books.csv"
+def main():
+    p = argparse.ArgumentParser(description='Run ScraperEngine on saved samples and save to CSV')
+    p.add_argument('--samples', '-s', default='car_scraper/samples', help='Samples directory')
+    p.add_argument('--out', '-o', default='results.csv', help='Output CSV filename')
+    args = p.parse_args()
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0"
-}
+    engine = ScraperEngine()
+    root = Path(__file__).resolve().parent
+    samples = root / args.samples
+    results = engine.scrape_samples(samples)
 
-# =====================================================
-# FETCH
-# =====================================================
+    # Print results (short debug)
+    for r in results:
+        pprint(r)
 
-def fetch(url):
-    print(f"FETCH → {url}")
-    r = requests.get(url, headers=HEADERS, timeout=15)
-    r.raise_for_status()
-    return r.text
+    # Prepare outputs: cars.csv and dealers.csv
+    cars_path = root / 'cars.csv'
+    dealers_path = root / 'dealers.csv'
+    cars_path.parent.mkdir(parents=True, exist_ok=True)
 
-# =====================================================
-# LISTING PAGE PARSER
-# Pattern: cards on a page
-# =====================================================
+    car_columns = [
+        'sample', 'template', 'brand', 'model', 'year', 'price_num', 'currency',
+        'mileage_num', 'fuel', 'transmission', 'description', 'raw'
+    ]
 
-def extract_book_links(html):
-    soup = BeautifulSoup(html, "html.parser")
-    links = []
+    dealer_columns = [
+        'site', 'template', 'name', 'telephone', 'email', 'address', 'raw'
+    ]
 
-    for book in soup.select("article.product_pod h3 a"):
-        href = book["href"]
-        full_url = urljoin(BASE_URL, href)
-        links.append(full_url)
+    def _extract(parsed: dict, key: str):
+        if not parsed:
+            return ''
+        # top-level
+        if key in parsed and parsed.get(key) is not None:
+            return parsed.get(key)
+        # specs dict
+        specs = parsed.get('specs') if isinstance(parsed.get('specs'), dict) else {}
+        if key in specs:
+            return specs.get(key)
+        # common variants
+        if key == 'mileage':
+            return specs.get('mileage') or specs.get('miles') or ''
+        if key == 'price':
+            return parsed.get('price') or (specs.get('price') if isinstance(specs.get('price'), str) else '')
+        return ''
 
-    print(f"Found {len(links)} book links")
-    return links
+    import re
 
-# =====================================================
-# DETAIL PAGE PARSER
-# Pattern: detail page fields
-# =====================================================
+    def _parse_int(s):
+        if not s:
+            return ''
+        if isinstance(s, (int, float)):
+            return int(s)
+        # remove non-digit characters except commas and dots
+        s2 = re.sub(r"[^0-9.,]", "", str(s))
+        s2 = s2.replace(',', '')
+        try:
+            if '.' in s2:
+                return int(float(s2))
+            return int(s2)
+        except Exception:
+            return ''
 
-def extract_book_details(html, url):
-    soup = BeautifulSoup(html, "html.parser")
+    def _parse_year(s):
+        if not s:
+            return ''
+        text = str(s)
+        m = re.search(r'(19\d{2}|20\d{2})', text)
+        return m.group(0) if m else ''
 
-    title = soup.find("h1").text.strip()
-    price = soup.select_one(".price_color").text.strip()
-    availability = soup.select_one(".availability").text.strip()
-    description_tag = soup.select_one("#product_description")
+    # We'll write two CSVs: cars (one row per car, only detail templates)
+    # and dealers (one row per site, deduplicated by name/telephone).
+    import logging
+    logging.basicConfig(level=logging.INFO)
 
-    if description_tag:
-        description = description_tag.find_next_sibling("p").text.strip()
-    else:
-        description = ""
+    # track dealers seen to ensure one-row-per-site
+    seen_dealers = {}
 
-    return {
-        "url": url,
-        "title": title,
-        "price": price,
-        "availability": availability,
-        "description": description
-    }
+    with cars_path.open('w', encoding='utf-8', newline='') as fh_cars, dealers_path.open('w', encoding='utf-8', newline='') as fh_dealers:
+        cars_writer = csv.DictWriter(fh_cars, fieldnames=car_columns)
+        dealers_writer = csv.DictWriter(fh_dealers, fieldnames=dealer_columns)
+        cars_writer.writeheader()
+        dealers_writer.writeheader()
 
-# =====================================================
-# SCRAPER ENGINE
-# =====================================================
+        for r in results:
+            tpl = r.get('template')
+            # Cars: only accept the canonical detail templates
+            car = r.get('car')
+            if car and tpl in ('detail_jsonld_vehicle', 'detail_html_spec_table', 'detail_hybrid_json_html', 'detail_inline_html_blocks'):
+                # normalize numeric values
+                price_val = _extract(car, 'price') or ''
+                price_num = _parse_int(price_val)
+                mileage_val = _extract(car, 'mileage') or ''
+                mileage_num = _parse_int(mileage_val)
+                row = {
+                    'sample': r.get('sample'),
+                    'template': tpl,
+                    'brand': _extract(car, 'brand') or '',
+                    'model': _extract(car, 'model') or '',
+                    'year': _parse_year(_extract(car, 'year') or _extract(car, 'name') or ''),
+                    'price_num': price_num,
+                    'currency': _extract(car, 'currency') or '',
+                    'mileage_num': mileage_num,
+                    'fuel': _extract(car, 'fuel') or '',
+                    'transmission': _extract(car, 'transmission') or '',
+                    'description': _extract(car, 'description') or '',
+                    'raw': json.dumps(car, ensure_ascii=False) if car else ''
+                }
+                cars_writer.writerow(row)
+            else:
+                # If a non-detail template produced parsed output, log a warning
+                if car:
+                    logging.warning('Template %s produced car-like output; skipping row for sample %s', tpl, r.get('sample'))
 
-def scrape_books():
-    all_books = []
-    current_page = START_PAGE
+            # Dealer rows: only accept dealer_info_jsonld and dedupe per name/telephone
+            dealer = r.get('dealer')
+            if dealer and tpl == 'dealer_info_jsonld':
+                key = (dealer.get('name') or '').strip() or r.get('sample')
+                tel = (dealer.get('telephone') or '').strip()
+                key2 = (key, tel)
+                if key2 not in seen_dealers:
+                    seen_dealers[key2] = dealer
+                    dealers_writer.writerow({
+                        'site': key,
+                        'template': tpl,
+                        'name': dealer.get('name') or '',
+                        'telephone': dealer.get('telephone') or '',
+                        'email': dealer.get('email') or '',
+                        'address': dealer.get('address') or '',
+                        'raw': json.dumps(dealer, ensure_ascii=False) if dealer else ''
+                    })
+            else:
+                if dealer:
+                    logging.warning('Template %s produced dealer-like output; skipping sample %s', tpl, r.get('sample'))
 
-    for page in range(1, MAX_PAGES + 1):
-        page_url = urljoin(BASE_URL, current_page)
-        print(f"\n=== PAGE {page} ===")
+    print(f"Saved cars to: {cars_path}")
+    print(f"Saved dealers to: {dealers_path}")
 
-        html = fetch(page_url)
-        book_links = extract_book_links(html)
 
-        for link in book_links:
-            detail_html = fetch(link)
-            book = extract_book_details(detail_html, link)
-            all_books.append(book)
-            print("  →", book["title"])
-
-        # find next page
-        soup = BeautifulSoup(html, "html.parser")
-        next_btn = soup.select_one("li.next a")
-        if not next_btn:
-            break
-
-        current_page = next_btn["href"]
-
-    return all_books
-
-# =====================================================
-# CSV SAVE
-# =====================================================
-
-def save_to_csv(rows):
-    if not rows:
-        print("No data to save")
-        return
-
-    with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-        writer.writeheader()
-        writer.writerows(rows)
-
-    print(f"\nSaved {len(rows)} books to {OUTPUT_FILE}")
-
-# =====================================================
-# MAIN
-# =====================================================
-
-if __name__ == "__main__":
-    data = scrape_books()
-    save_to_csv(data)
+if __name__ == '__main__':
+    main()
