@@ -1,11 +1,12 @@
-"""Canonical file `listing_card.py` — delegates to card listing implementation."""
+"""Canonical file `listing_card.py` — wrapper to standardize naming.
+
+Delegates to CardListingTemplate to preserve a canonical template name
+while avoiding duplication.
+"""
 from typing import List
-from urllib.parse import urljoin
 from .card_listing import CardListingTemplate
 
 
 class ListingCard(CardListingTemplate):
+    """Canonical wrapper: card-based listings."""
     name = 'listing_card'
-
-    def get_listing_urls(self, html: str, page_url: str) -> List[str]:
-        return super().get_listing_urls(html, page_url)

@@ -25,109 +25,103 @@ class TemplateRegistry:
 class TemplateDetector:
     """Simple heuristic detector that picks the best template for HTML."""
 
+    DETAIL_TEMPLATES = {
+        'detail_hybrid_json_html': 0,
+        'detail_jsonld_vehicle': 0,
+        'detail_inline_html_blocks': 0,
+        'detail_html_spec_table': 0,
+    }
+    LISTING_TEMPLATES = {'listing_image_grid', 'listing_card', 'listing_section'}
+    PAGINATION_TEMPLATES = {'pagination_query', 'pagination_path'}
+
     def __init__(self, registry: TemplateRegistry):
         self.registry = registry
 
     def detect(self, html: str, page_url: str):
-        # Use a single soup instance for all detection checks
+        """Detect the most appropriate template using heuristic scoring."""
+        # Parse HTML once for reuse
         soup = make_soup(html)
+        jsonld_objs = extract_jsonld_objects(html)
 
-        # quick signals
+        # Detect page features
         has_table = bool(soup.find('table'))
         has_specs = bool(
             has_table
             or soup.select('.spec-row')
             or soup.select('.spec')
+            or soup.find('dl')
             or (soup.select('.label') and soup.select('.value'))
-            or soup.select('.spec-block')
-            or soup.select('dl')
+        )
+        has_jsonld_vehicle = any(
+            isinstance(o, dict) and 'vehicle' in str(o.get('@type', '')).lower()
+            for o in jsonld_objs
         )
 
-        jsonld_objs = extract_jsonld_objects(html)
-        has_jsonld_vehicle = any(isinstance(o, dict) and (('Vehicle' in str(o.get('@type') or '')) or ('vehicle' in str(o.get('@type') or '').lower())) for o in jsonld_objs)
-
-        # scoring across available templates
         candidates = []
 
-        # Detail templates
-        detail_mapping = {
-            'detail_hybrid_json_html': 0,
-            'detail_jsonld_vehicle': 0,
-            'detail_inline_html_blocks': 0,
-            'detail_html_spec_table': 0,
-        }
-
-        # hybrid: prefer JSON-LD + specs
+        # Score detail templates
+        detail_scores = dict(self.DETAIL_TEMPLATES)
         if has_jsonld_vehicle and has_specs:
-            detail_mapping['detail_hybrid_json_html'] += 3
-
-        # json-ld detail
+            detail_scores['detail_hybrid_json_html'] += 3
         if has_jsonld_vehicle:
-            detail_mapping['detail_jsonld_vehicle'] += 2
-
-        # inline spec blocks
-        if soup.select('.spec-row') or soup.select('.spec') or (soup.select('.label') and soup.select('.value')) or soup.find('dl'):
-            detail_mapping['detail_inline_html_blocks'] += 1
-
-        # spec table
+            detail_scores['detail_jsonld_vehicle'] += 2
+        if has_specs:
+            detail_scores['detail_inline_html_blocks'] += 1
         if has_table:
-            detail_mapping['detail_html_spec_table'] += 1
+            detail_scores['detail_html_spec_table'] += 1
 
-        for name, base_score in detail_mapping.items():
+        for name, score in detail_scores.items():
             cls = TEMPLATE_BY_NAME.get(name)
-            if cls:
-                candidates.append((cls(), base_score))
+            if cls and score > 0:
+                candidates.append((cls(), score))
 
-        # Listing templates: score by number of discovered listing URLs
-        for name in ('listing_image_grid', 'listing_card', 'listing_section'):
+        # Score listing templates by URL count
+        for name in self.LISTING_TEMPLATES:
             cls = TEMPLATE_BY_NAME.get(name)
             if not cls:
                 continue
             tpl = cls()
             try:
                 urls = tpl.get_listing_urls(html, page_url)
-                score = len(urls)
-                candidates.append((tpl, score))
-            except NotImplementedError:
-                continue
+                if urls:
+                    candidates.append((tpl, len(urls)))
+            except (NotImplementedError, Exception):
+                pass
 
-        # Pagination templates: small score if next page found
-        for name in ('pagination_query', 'pagination_path'):
+        # Score pagination templates (1 point if next page found)
+        for name in self.PAGINATION_TEMPLATES:
             cls = TEMPLATE_BY_NAME.get(name)
             if not cls:
                 continue
             tpl = cls()
             try:
-                nxt = tpl.get_next_page(html, page_url)
-                score = 1 if nxt else 0
-                candidates.append((tpl, score))
-            except NotImplementedError:
-                continue
+                if tpl.get_next_page(html, page_url):
+                    candidates.append((tpl, 1))
+            except (NotImplementedError, Exception):
+                pass
 
-        # Dealer info fallback: modest score when Organization JSON-LD present
+        # Score dealer template if Organization JSON-LD present
         dealer_cls = TEMPLATE_BY_NAME.get('dealer_info_jsonld')
-        dealer_score = 0
-        # look for Organization type in jsonld objects
-        for o in jsonld_objs:
-            t = o.get('@type') if isinstance(o, dict) else ''
-            if 'Organization' in str(t) or 'AutomotiveBusiness' in str(t):
-                dealer_score = 2
-                break
         if dealer_cls:
-            candidates.append((dealer_cls(), dealer_score))
+            for o in jsonld_objs:
+                if isinstance(o, dict) and any(
+                    x in str(o.get('@type', ''))
+                    for x in ('Organization', 'AutomotiveBusiness')
+                ):
+                    candidates.append((dealer_cls(), 2))
+                    break
 
-        # choose best candidate (highest score). Ties resolved by original ALL_TEMPLATES order
         if not candidates:
             return None
 
-        # compute max score
+        # Return best candidate (max score, ties broken by registry order)
         max_score = max(score for _, score in candidates)
-        # filter candidates with max_score
         best = [tpl for tpl, score in candidates if score == max_score]
+        
         if len(best) == 1:
             return best[0]
 
-        # tie-breaker: pick first in authoritative order
+        # Tie-breaker: pick first in authoritative order
         for cls in self.registry.classes():
             for b in best:
                 if isinstance(b, cls):

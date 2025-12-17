@@ -5,22 +5,12 @@ and converts the heading into a normalized key (lowercase, underscores).
 """
 from typing import Dict, Any
 import re
-import html as _html
+from bs4 import BeautifulSoup
 from .base import CarTemplate
-
-_TABLE_RE = re.compile(r'<table[^>]*>(.*?)</table>', re.I | re.S)
-_TR_RE = re.compile(r'<tr[^>]*>(.*?)</tr>', re.I | re.S)
-_TH_RE = re.compile(r'<th[^>]*>(.*?)</th>', re.I | re.S)
-_TD_RE = re.compile(r'<td[^>]*>(.*?)</td>', re.I | re.S)
-
-
-def _strip_tags(text: str) -> str:
-    text = _html.unescape(text or '')
-    text = re.sub(r'<[^>]+>', '', text)
-    return text.strip()
 
 
 def _normalize_key(k: str) -> str:
+    """Normalize key: lowercase, alphanumeric + underscore, collapse underscores."""
     k = k.strip().lower()
     k = re.sub(r"[^a-z0-9]+", '_', k)
     k = re.sub(r'__+', '_', k)
@@ -32,25 +22,20 @@ class HTMLSpecTableTemplate(CarTemplate):
 
     def parse_car_page(self, html: str, car_url: str) -> Dict[str, Any]:
         """Parse the first spec table found and return normalized specs dict."""
-        m = _TABLE_RE.search(html)
-        if not m:
+        soup = BeautifulSoup(html, 'lxml')
+        table = soup.find('table')
+        if not table:
             return {'_source': 'html-table', 'specs': {}}
-        table_html = m.group(1)
+        
         specs = {}
-        for tr in _TR_RE.findall(table_html):
-            thm = _TH_RE.search(tr)
-            tdm = _TD_RE.search(tr)
-            if not thm or not tdm:
-                # some tables use two <td>s (key/value)
-                tds = _TD_RE.findall(tr)
-                if len(tds) >= 2:
-                    key = _strip_tags(tds[0])
-                    val = _strip_tags(tds[1])
-                else:
-                    continue
-            else:
-                key = _strip_tags(thm.group(1))
-                val = _strip_tags(tdm.group(1))
+        for tr in table.find_all('tr'):
+            cells = tr.find_all(['th', 'td'])
+            if len(cells) < 2:
+                continue
+            # First cell is key, second is value
+            key = cells[0].get_text(strip=True)
+            val = cells[1].get_text(strip=True)
             nk = _normalize_key(key)
             specs[nk] = val
+        
         return {'_source': 'html-table', 'specs': specs}
