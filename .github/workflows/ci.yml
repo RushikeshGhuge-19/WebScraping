@@ -28,4 +28,5 @@ jobs:
 
       - name: Run tests
         run: |
-          python -m pytest -q car_scraper/tests
+          # Ignore known non-Python files at repo root during collection
+          python -m pytest -q --ignore=test_log.txt car_scraper/tests
