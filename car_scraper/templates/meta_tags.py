@@ -1,7 +1,9 @@
-"""Meta-tags extractor for cars.
+"""SUPPORTING MODULE — Meta tag helpers (NOT a structural template).
 
 Parses common meta tags (Open Graph, product) for basic fields like
-title, price, currency. Useful when structured data is absent.
+title, price, currency. These functions are intended as fallbacks for
+DETAIL templates and are not part of the canonical structural template
+set.
 """
 from typing import Dict, Any
 from bs4 import BeautifulSoup

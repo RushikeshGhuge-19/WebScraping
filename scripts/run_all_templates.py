@@ -78,12 +78,13 @@ def main():
                     else:
                         list_status = 'unexpected'
                         list_err += 1
+                        if not error_msg:
+                            error_msg = f"Expected list, got {type(urls).__name__}"
                 except Exception as e:
                     list_status = 'error'
                     list_err += 1
-                    if not error_msg:
-                        error_msg = repr(e)
-
+                    list_error = repr(e)
+                    error_msg = f"{error_msg}; {list_error}" if error_msg else list_error
             rows.append({
                 'sample': sf.name,
                 'template': name,

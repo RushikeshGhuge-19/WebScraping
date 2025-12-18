@@ -5,10 +5,56 @@ It detects the most appropriate template for a page and dispatches parsing.
 """
 from typing import List, Optional, Tuple, Dict, Any, Type
 from pathlib import Path
+import logging
 from bs4 import BeautifulSoup
 from .templates.utils import make_soup, extract_jsonld_objects
 
 from .templates.all_templates import ALL_TEMPLATES, TEMPLATE_BY_NAME
+
+logger = logging.getLogger(__name__)
+
+# Allowed JSON-LD @type names for vehicle objects (case-insensitive)
+VEHICLE_TYPE_NAMES = {'vehicle', 'car', 'automobile', 'vehiclemodel'}
+
+
+def _extract_jsonld_type_names(type_value: Any) -> List[str]:
+    """Extract normalized type names from JSON-LD @type field.
+    
+    Handles:
+    - String types and full IRIs (splits on / and # to get local name)
+    - Lists of type strings or IRIs
+    Returns lowercase local type names.
+    """
+    if isinstance(type_value, str):
+        types = [type_value]
+    elif isinstance(type_value, list):
+        types = type_value
+    else:
+        return []
+    
+    result = []
+    for t in types:
+        if not isinstance(t, str):
+            continue
+        # Extract local type name from IRI (e.g., https://schema.org/Vehicle -> Vehicle)
+        local_name = t.split('/')[-1].split('#')[-1]
+        result.append(local_name.lower())
+    return result
+
+
+def _is_jsonld_vehicle(obj: Dict) -> bool:
+    """Check if a JSON-LD object represents a vehicle type.
+    
+    Uses exact type matching against a whitelist to avoid false positives
+    from substring matches or stringified arrays.
+    """
+    if not isinstance(obj, dict):
+        return False
+    type_value = obj.get('@type')
+    if not type_value:
+        return False
+    type_names = _extract_jsonld_type_names(type_value)
+    return any(t in VEHICLE_TYPE_NAMES for t in type_names)
 
 
 class TemplateRegistry:
@@ -53,8 +99,7 @@ class TemplateDetector:
             or (soup.select('.label') and soup.select('.value'))
         )
         has_jsonld_vehicle = any(
-            isinstance(o, dict) and 'vehicle' in str(o.get('@type', '')).lower()
-            for o in jsonld_objs
+            _is_jsonld_vehicle(o) for o in jsonld_objs
         )
 
         candidates = []
@@ -85,8 +130,12 @@ class TemplateDetector:
                 urls = tpl.get_listing_urls(html, page_url)
                 if urls:
                     candidates.append((tpl, len(urls)))
-            except (NotImplementedError, Exception):
+            except NotImplementedError:
+                # Expected for templates that don't implement this method
                 pass
+            except Exception as e:
+                # Log unexpected errors to aid debugging
+                logger.exception(f"Error scoring {name}.get_listing_urls: {e}")
 
         # Score pagination templates (1 point if next page found)
         for name in self.PAGINATION_TEMPLATES:
@@ -97,8 +146,12 @@ class TemplateDetector:
             try:
                 if tpl.get_next_page(html, page_url):
                     candidates.append((tpl, 1))
-            except (NotImplementedError, Exception):
+            except NotImplementedError:
+                # Expected for templates that don't implement this method
                 pass
+            except Exception as e:
+                # Log unexpected errors to aid debugging
+                logger.exception(f"Error scoring {name}.get_next_page: {e}")
 
         # Score dealer template if Organization JSON-LD present
         dealer_cls = TEMPLATE_BY_NAME.get('dealer_info_jsonld')

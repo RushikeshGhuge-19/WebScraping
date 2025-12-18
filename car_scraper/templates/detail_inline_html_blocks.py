@@ -47,8 +47,8 @@ class DetailInlineHTMLBlocks(CarTemplate):
                 price_meta = tag.find('meta', attrs={'itemprop': 'price'})
                 if price_meta and price_meta.get('content'):
                     out['price'] = price_meta['content']
-                return out
-        return out
+                return finalize_detail_output(out)
+        return finalize_detail_output(out)
 
     def parse_car_page(self, html: str, car_url: str) -> Dict[str, Any]:
         soup = BeautifulSoup(html, 'lxml')
@@ -94,11 +94,11 @@ class DetailInlineHTMLBlocks(CarTemplate):
                 nk = re.sub(r"[^a-z0-9]+", '_', key.lower()).strip('_')
                 out['specs'][nk] = val
                 if 'mileage' in key.lower() and 'mileage' not in out:
+                    out['mileage'] = val
                     m_val, m_unit = parse_mileage(val)
                     if m_val:
                         out['mileage_value'] = m_val
                         out['mileage_unit'] = m_unit
-
         # .spec-row style: <div class="spec-row"><span class="spec">Label</span><span class="value">Val</span></div>
         for row in soup.select('.spec-row'):
             lab = row.select_one('.spec') or row.select_one('th')
@@ -109,6 +109,7 @@ class DetailInlineHTMLBlocks(CarTemplate):
                 nk = re.sub(r"[^a-z0-9]+", '_', key.lower()).strip('_')
                 out['specs'][nk] = val
                 if 'mileage' in key.lower() and 'mileage' not in out:
+                    out['mileage'] = val
                     m_val, m_unit = parse_mileage(val)
                     if m_val:
                         out['mileage_value'] = m_val
@@ -119,11 +120,11 @@ class DetailInlineHTMLBlocks(CarTemplate):
             micro = self._microdata_fallback(soup)
             if micro and len(micro) > 1:
                 out.update(micro)
-                return out
+                return finalize_detail_output(out)
             meta = self._meta_fallback(soup)
             if meta and (meta.get('price') or meta.get('title')):
                 out.update(meta)
-                return out
+                return finalize_detail_output(out)
 
         # normalize brand/year if provided in specs
         if out.get('specs'):
@@ -134,4 +135,4 @@ class DetailInlineHTMLBlocks(CarTemplate):
                 if y:
                     out['year'] = y
 
-        return out
+        return finalize_detail_output(out)

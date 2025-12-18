@@ -1,5 +1,10 @@
 import sys
-sys.path.insert(0, r"e:\Scrapy")
+from pathlib import Path
+
+# Add project root to path so car_scraper package imports work
+project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(project_root))
+
 from car_scraper.templates import ALL_TEMPLATES
 from car_scraper.templates import ListingJSONAPITemplate, ListingAjaxInfiniteTemplate, DetailImageGallery
 

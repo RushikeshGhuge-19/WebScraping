@@ -1,11 +1,11 @@
-from car_scraper.templates.json_api_listing import ListingJSONAPITemplate
+from car_scraper.templates.json_api_listing import JSONAPIListingTemplate
 from car_scraper.templates.ajax_infinite_listing import ListingAjaxInfiniteTemplate
 from car_scraper.templates.detail_image_gallery import DetailImageGallery
 
 
 def test_json_api_listing_extracts_urls():
     html = '<html><script type="application/json">{"items":[{"url":"/car/123","title":"X"}]}</script></html>'
-    tpl = ListingJSONAPITemplate()
+    tpl = JSONAPIListingTemplate()
     urls = tpl.get_listing_urls(html, 'https://example.com')
     assert urls == ['https://example.com/car/123']
 

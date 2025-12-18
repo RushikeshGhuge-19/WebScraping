@@ -5,7 +5,7 @@ returns a small confidence score and provenance information.
 """
 from typing import Dict, Any, Optional
 from .base import CarTemplate
-from .utils import extract_jsonld_objects, parse_price
+from .utils import extract_jsonld_objects, parse_price, parse_year
 
 
 def _extract_text(node: Any) -> Optional[str]:
@@ -55,9 +55,23 @@ class JSONLDVehicleTemplate(CarTemplate):
                 out['description'] = _extract_text(item.get('description'))
                 out['_raw'] = item
                 out['_source'] = 'json-ld'
-                # Simple confidence: proportion of core fields present
-                core = sum(1 for k in ('brand', 'model', 'price') if out.get(k))
+                # try to extract year from name or explicit fields
+                name_val = out.get('name')
+                y = parse_year(name_val)
+                if y:
+                    out['year'] = y
+                
+                # Confidence: proportion of core fields with meaningful values
+                core = 0
+                for k in ('brand', 'model'):
+                    val = out.get(k)
+                    if val and (not isinstance(val, str) or len(val.strip()) > 0):
+                        core += 1
+                # For price: accept non-None numeric values (including 0 if amt parsed successfully)
+                price_val = out.get('price')
+                if price_val is not None and isinstance(price_val, (int, float)) and price_val >= 0:
+                    core += 1
                 out['confidence'] = round(core / 3.0, 2)
                 return out
 
-        return {'_source': 'json-ld', '_raw': None, 'confidence': 0.0}
+        return {'_source': 'json-ld', '_raw': {}, 'confidence': 0.0}
