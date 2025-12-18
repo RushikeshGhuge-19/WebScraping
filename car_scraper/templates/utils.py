@@ -8,11 +8,54 @@ from typing import List, Dict, Any, Optional
 import json
 import html as _html
 import re
+import warnings
 from bs4 import BeautifulSoup
+
+try:
+    from packaging.version import parse as parse_version
+except ImportError:
+    # Fallback: simple version tuple parsing if packaging not available
+    def parse_version(version_str: str):
+        """Parse version string into comparable tuple."""
+        try:
+            parts = []
+            for part in version_str.split('.'):
+                # Extract leading digits, ignore non-numeric suffixes
+                match = re.match(r'^(\d+)', part)
+                if match:
+                    parts.append(int(match.group(1)))
+            return tuple(parts) if parts else (0,)
+        except Exception:
+            return (0,)
 
 
 def make_soup(html: str) -> BeautifulSoup:
-    return BeautifulSoup(html, 'lxml')
+    """Parse HTML using BeautifulSoup with lxml backend.
+    
+    Suppresses known DeprecationWarning from lxml HTMLParser regarding
+    'strip_cdata' option in BeautifulSoup 4.12+ with lxml 4.9+.
+    """
+    # Only suppress for known problematic version combinations
+    # Check if we're running BS4 4.12+ that emits the warning
+    bs_version = getattr(BeautifulSoup, '__version__', None)
+    suppress_warning = False
+    if bs_version:
+        try:
+            suppress_warning = parse_version(bs_version) >= parse_version('4.12')
+        except Exception:
+            suppress_warning = False
+    
+    if suppress_warning:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                category=DeprecationWarning,
+                message=r".*The 'strip_cdata' option of HTMLParser.*",
+                module=r".*_lxml.*",
+            )
+            return BeautifulSoup(html, 'lxml')
+    else:
+        return BeautifulSoup(html, 'lxml')
 
 
 def extract_jsonld_objects(html: str) -> List[Dict[str, Any]]:
@@ -115,8 +158,7 @@ def parse_price(txt: Optional[str]):
         s = s.lstrip('€')
 
     # remove currency letters/symbols intermixed
-    s = re.sub(r"[A-Za-z£$€¥,\s]+", lambda m: '' if any(c.isdigit() for c in m.group(0)) else '', s)
-    # fallback: strip non-digit except dot
+    s = re.sub(r"[A-Za-z£$€¥,\s]+", '', s)    # fallback: strip non-digit except dot
     s = re.sub(r"[^0-9\.\-]", '', s)
     if not s:
         return None, cur

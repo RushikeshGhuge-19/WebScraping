@@ -10,7 +10,7 @@ from .base import CarTemplate
 from .listing_card import ListingCard
 from .listing_image_grid import ListingImageGrid
 from .section_listing import SectionListingTemplate as ListingSection
-from .json_api_listing import ListingJSONAPITemplate
+from .json_api_listing import JSONAPIListingTemplate
 from .ajax_infinite_listing import ListingAjaxInfiniteTemplate
 
 # Detail (car) templates (emit car rows)

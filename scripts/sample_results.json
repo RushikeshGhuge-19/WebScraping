@@ -306,8 +306,11 @@
         "name": "2018 Sample Hybrid",
         "brand": "SampleBrand",
         "model": "S-Model",
+        "price_raw": "12995",
         "price": "12995",
+        "price_value": 12995.0,
         "currency": "GBP",
+        "year": 2018,
         "_raw_jsonld": {
           "@context": "https://schema.org/",
           "@type": "Vehicle",
@@ -351,6 +354,7 @@
           }
         },
         "_source": "json-ld",
+        "year": 2018,
         "confidence": 1.0
       }
     },
@@ -438,8 +442,11 @@
         "name": "2014 Fiat 500c 1.2 Lounge",
         "brand": "Fiat",
         "model": "500c",
+        "price_raw": "4995",
         "price": "4995",
+        "price_value": 4995.0,
         "currency": "GBP",
+        "year": 2014,
         "_raw_jsonld": {
           "@context": "https://schema.org/",
           "@type": "Vehicle",
@@ -480,6 +487,7 @@
           }
         },
         "_source": "json-ld",
+        "year": 2014,
         "confidence": 1.0
       }
     },

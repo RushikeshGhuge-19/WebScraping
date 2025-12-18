@@ -29,7 +29,7 @@ class HTMLSpecTableTemplate(CarTemplate):
         
         specs = {}
         for tr in table.find_all('tr'):
-            cells = tr.find_all(['th', 'td'])
+            cells = tr.find_all(['th', 'td'], recursive=False)
             if len(cells) < 2:
                 continue
             # First cell is key, second is value

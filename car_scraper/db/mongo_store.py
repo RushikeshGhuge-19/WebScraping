@@ -17,14 +17,16 @@ except Exception:  # pragma: no cover - dependency may be missing in some envs
     MongoClient = None  # type: ignore
     PyMongoError = Exception  # type: ignore
     ServerSelectionTimeoutError = Exception  # type: ignore
-
+    WriteConcern = None  # type: ignore
+    ASCENDING = None  # type: ignore
 # Configuration via environment
 MONGO_URI = os.environ.get('MONGO_URI', 'mongodb://localhost:27017')
 DB_NAME = os.environ.get('MONGO_DB', 'carsdb')
 COLLECTION = os.environ.get('MONGO_COLLECTION', 'listings')
 # Write concern: w=1 by default, can be 'majority' or integer
-MONGO_W = os.environ.get('MONGO_WRITE_CONCERN', '1')
-# connection timeouts (seconds)
+# Write concern: w=1 by default, can be 'majority' or integer
+_wc_str = os.environ.get('MONGO_WRITE_CONCERN', '1')
+MONGO_W = _wc_str if _wc_str == 'majority' else int(_wc_str)# connection timeouts (seconds)
 MONGO_SERVER_SELECTION_TIMEOUT = int(os.environ.get('MONGO_SERVER_SELECTION_TIMEOUT', '5'))
 
 _client: Optional[MongoClient] = None
@@ -34,6 +36,8 @@ def _with_retries(retries: int = 3, backoff: float = 0.2):
     def deco(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
+            if retries < 1:
+                return fn(*args, **kwargs)
             last_exc = None
             for attempt in range(1, retries + 1):
                 try:
@@ -41,12 +45,12 @@ def _with_retries(retries: int = 3, backoff: float = 0.2):
                 except (PyMongoError, ServerSelectionTimeoutError) as e:
                     last_exc = e
                     time.sleep(backoff * attempt)
-            raise last_exc
+            if last_exc:
+                raise last_exc
 
         return wrapper
 
     return deco
-
 
 def get_client() -> MongoClient:
     """Return a cached `MongoClient` configured with sensible timeouts."""
