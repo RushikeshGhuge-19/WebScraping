@@ -1,0 +1,2 @@
+start_time,end_time,tests_run,status,warnings,message
+2025-12-19T10:00:00,2025-12-19T10:02:32,49 tests passed,success,"DeprecationWarning from bs4.builder._lxml about strip_cdata"

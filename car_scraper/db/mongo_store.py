@@ -4,21 +4,26 @@ This module provides a small helper to connect to MongoDB using the
 `MONGO_URI`, `MONGO_DB` and `MONGO_COLLECTION` environment variables.
 It exposes `save_listing()` which upserts by `url` or `vin` when available.
 """
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 import os
 import time
 from functools import wraps
 
-try:
+if TYPE_CHECKING:  # pragma: no cover - typing helpers only
     from pymongo import MongoClient, ASCENDING
     from pymongo.errors import PyMongoError, ServerSelectionTimeoutError
     from pymongo.write_concern import WriteConcern
-except Exception:  # pragma: no cover - dependency may be missing in some envs
-    MongoClient = None  # type: ignore
-    PyMongoError = Exception  # type: ignore
-    ServerSelectionTimeoutError = Exception  # type: ignore
-    WriteConcern = None  # type: ignore
-    ASCENDING = None  # type: ignore
+else:
+    try:
+        from pymongo import MongoClient, ASCENDING
+        from pymongo.errors import PyMongoError, ServerSelectionTimeoutError
+        from pymongo.write_concern import WriteConcern
+    except ImportError:  # pragma: no cover - dependency may be missing
+        MongoClient = None  # type: ignore
+        PyMongoError = Exception  # type: ignore
+        ServerSelectionTimeoutError = Exception  # type: ignore
+        WriteConcern = None  # type: ignore
+        ASCENDING = None  # type: ignore
 # Configuration via environment
 MONGO_URI = os.environ.get('MONGO_URI', 'mongodb://localhost:27017')
 DB_NAME = os.environ.get('MONGO_DB', 'carsdb')

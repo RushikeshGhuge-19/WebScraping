@@ -9,7 +9,8 @@ from bs4 import BeautifulSoup
 import re
 import html as _html
 from .base import CarTemplate
-from .utils import parse_mileage, parse_year, normalize_brand, finalize_detail_output
+from .utils import finalize_detail_output
+from ..utils.schema_normalizer import parse_mileage, parse_year, normalize_brand
 
 
 class DetailInlineHTMLBlocks(CarTemplate):

@@ -4,10 +4,11 @@ This minimal engine is intended for offline parsing of saved HTML files.
 It detects the most appropriate template for a page and dispatches parsing.
 """
 from typing import List, Optional, Tuple, Dict, Any, Type
+import re
 from pathlib import Path
 import logging
 from bs4 import BeautifulSoup
-from .templates.utils import make_soup, extract_jsonld_objects
+from .templates.utils import make_soup, extract_jsonld_objects, extract_meta_values, extract_microdata
 
 from .templates.all_templates import ALL_TEMPLATES, TEMPLATE_BY_NAME
 
@@ -79,9 +80,20 @@ class TemplateDetector:
     }
     LISTING_TEMPLATES = {'listing_image_grid', 'listing_card', 'listing_section'}
     PAGINATION_TEMPLATES = {'pagination_query', 'pagination_path'}
+    DETAIL_SCORE_MAX = 6
+    LISTING_SCORE_MAX = 5
+    PAGINATION_SCORE = 2
+    DEALER_SCORE = 3
+    TYPE_PRIORITY = {'detail': 3, 'listing': 2, 'pagination': 1, 'dealer': 0}
 
     def __init__(self, registry: TemplateRegistry):
         self.registry = registry
+
+    def _normalize_detail_score(self, score: int) -> float:
+        return min(score, self.DETAIL_SCORE_MAX) / self.DETAIL_SCORE_MAX * 10
+
+    def _normalize_listing_score(self, count: int) -> float:
+        return min(count, self.LISTING_SCORE_MAX) / self.LISTING_SCORE_MAX * 10
 
     def detect(self, html: str, page_url: str):
         """Detect the most appropriate template using heuristic scoring."""
@@ -101,8 +113,13 @@ class TemplateDetector:
         has_jsonld_vehicle = any(
             _is_jsonld_vehicle(o) for o in jsonld_objs
         )
+        meta = extract_meta_values(soup)
+        title_text = (meta.get('title') or '') if isinstance(meta, dict) else ''
+        has_title_year = bool(re.search(r"(19\d{2}|20\d{2})", title_text))
+        has_price_meta = bool(meta.get('price'))
+        has_microdata = bool(extract_microdata(html))
 
-        candidates = []
+        candidates: List[Tuple[Any, str, float]] = []
 
         # Score detail templates
         detail_scores = dict(self.DETAIL_TEMPLATES)
@@ -110,6 +127,15 @@ class TemplateDetector:
             detail_scores['detail_hybrid_json_html'] += 3
         if has_jsonld_vehicle:
             detail_scores['detail_jsonld_vehicle'] += 2
+        # boost detail candidates when price metadata or year in title present
+        if has_price_meta:
+            detail_scores['detail_jsonld_vehicle'] += 2
+            detail_scores['detail_hybrid_json_html'] += 1
+        if has_title_year:
+            detail_scores['detail_inline_html_blocks'] += 2
+        if has_microdata:
+            # microdata often maps to inline blocks
+            detail_scores['detail_inline_html_blocks'] += 2
         if has_specs:
             detail_scores['detail_inline_html_blocks'] += 1
         if has_table:
@@ -117,8 +143,11 @@ class TemplateDetector:
 
         for name, score in detail_scores.items():
             cls = TEMPLATE_BY_NAME.get(name)
-            if cls and score > 0:
-                candidates.append((cls(), score))
+            if not cls or score <= 0:
+                continue
+            tpl = cls()
+            normalized_score = self._normalize_detail_score(score)
+            candidates.append((tpl, 'detail', normalized_score))
 
         # Score listing templates by URL count
         for name in self.LISTING_TEMPLATES:
@@ -129,15 +158,15 @@ class TemplateDetector:
             try:
                 urls = tpl.get_listing_urls(html, page_url)
                 if urls:
-                    candidates.append((tpl, len(urls)))
+                    normalized = self._normalize_listing_score(len(urls))
+                    candidates.append((tpl, 'listing', normalized))
             except NotImplementedError:
                 # Expected for templates that don't implement this method
                 pass
             except Exception as e:
-                # Log unexpected errors to aid debugging
                 logger.exception(f"Error scoring {name}.get_listing_urls: {e}")
 
-        # Score pagination templates (1 point if next page found)
+        # Score pagination templates (constant weight)
         for name in self.PAGINATION_TEMPLATES:
             cls = TEMPLATE_BY_NAME.get(name)
             if not cls:
@@ -145,12 +174,11 @@ class TemplateDetector:
             tpl = cls()
             try:
                 if tpl.get_next_page(html, page_url):
-                    candidates.append((tpl, 1))
+                    candidates.append((tpl, 'pagination', float(self.PAGINATION_SCORE)))
             except NotImplementedError:
                 # Expected for templates that don't implement this method
                 pass
             except Exception as e:
-                # Log unexpected errors to aid debugging
                 logger.exception(f"Error scoring {name}.get_next_page: {e}")
 
         # Score dealer template if Organization JSON-LD present
@@ -161,26 +189,31 @@ class TemplateDetector:
                     x in str(o.get('@type', ''))
                     for x in ('Organization', 'AutomotiveBusiness')
                 ):
-                    candidates.append((dealer_cls(), 2))
+                    candidates.append((dealer_cls(), 'dealer', float(self.DEALER_SCORE)))
                     break
 
         if not candidates:
             return None
 
-        # Return best candidate (max score, ties broken by registry order)
-        max_score = max(score for _, score in candidates)
-        best = [tpl for tpl, score in candidates if score == max_score]
-        
+        max_score = max(score for _, _, score in candidates)
+        best = [(tpl, categ) for tpl, categ, score in candidates if score == max_score]
+
         if len(best) == 1:
-            return best[0]
+            return best[0][0]
+
+        priority = max(self.TYPE_PRIORITY.get(categ, 0) for _, categ in best)
+        priority_candidates = [item for item in best if self.TYPE_PRIORITY.get(item[1], 0) == priority]
+
+        if len(priority_candidates) == 1:
+            return priority_candidates[0][0]
 
         # Tie-breaker: pick first in authoritative order
         for cls in self.registry.classes():
-            for b in best:
-                if isinstance(b, cls):
-                    return b
+            for tpl, _ in priority_candidates:
+                if isinstance(tpl, cls):
+                    return tpl
 
-        return best[0]
+        return priority_candidates[0][0]
 
 
 class ScraperEngine:
@@ -205,7 +238,15 @@ class ScraperEngine:
         """
         html = file_path.read_text(encoding='utf-8')
         tpl = self.detector.detect(html, str(file_path))
-        result: Dict[str, Any] = {'sample': file_path.name, 'template': tpl.name}
+        tpl_name = tpl.name if tpl is not None else 'no_template'
+        result: Dict[str, Any] = {'sample': file_path.name, 'template': tpl_name}
+
+        if tpl is None:
+            logger.warning('No template detected for sample %s', file_path.name)
+            # return early with empty parsed fields
+            result['car'] = None
+            result['dealer'] = None
+            return result
 
         car = None
         dealer = None

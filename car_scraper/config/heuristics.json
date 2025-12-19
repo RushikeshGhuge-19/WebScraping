@@ -1,0 +1,13 @@
+{
+  "listing_url_allowlist": [
+    "example.com",
+    "autotrader.co.uk",
+    "carwow.co.uk",
+    "anyvehicle.co.uk",
+    "cargurus.com",
+    "cars.co.uk",
+    "carwow.com",
+    "autotrader.com"
+  ],
+  "json_blob_max_bytes": 131072
+}

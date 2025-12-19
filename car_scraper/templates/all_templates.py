@@ -42,7 +42,7 @@ from .detail_inline_html_blocks import DetailInlineHTMLBlocks
 from .pagination_query import PaginationQueryTemplate
 from .pagination_path import PaginationPathTemplate
 
-from .dealer_info_jsonld import DealerInfoJSONLD
+from .dealer_info import DealerInfoTemplate as DealerInfoJSONLD
 
 
 # To satisfy the canonical structural names we provide lightweight aliases
