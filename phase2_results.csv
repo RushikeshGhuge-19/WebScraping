@@ -1,0 +1,2 @@
+date,tests,status,warnings
+2025-12-19,49 tests passed,warnings-only,bs4 strip_cdata warning

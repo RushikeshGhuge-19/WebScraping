@@ -5,6 +5,7 @@ level metadata such as name, address, phone and email.
 """
 from typing import Dict, Any
 import json
+import logging
 import re
 import html as _html
 from bs4 import BeautifulSoup
@@ -24,7 +25,8 @@ def _get_text(node: Any) -> Any:
 
 
 class DealerInfoTemplate(CarTemplate):
-    name = 'dealer_info'
+    # Use the canonical detection name expected by the engine
+    name = 'dealer_info_jsonld'
 
     def parse_car_page(self, html: str, car_url: str) -> Dict[str, Any]:
         # This template expects a site-level page (could be any page)
@@ -33,7 +35,8 @@ class DealerInfoTemplate(CarTemplate):
         for raw in _SCRIPT_RE.findall(str(soup)):
             try:
                 data = json.loads(_html.unescape(raw))
-            except Exception:
+            except json.JSONDecodeError as exc:
+                logging.getLogger(__name__).debug("Skipping invalid JSON-LD blob: %s", exc)
                 continue
             items = data if isinstance(data, list) else [data]
             for item in items:

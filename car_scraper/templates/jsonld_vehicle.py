@@ -5,7 +5,8 @@ returns a small confidence score and provenance information.
 """
 from typing import Dict, Any, Optional
 from .base import CarTemplate
-from .utils import extract_jsonld_objects, parse_price, parse_year
+from .utils import extract_jsonld_objects
+from ..utils.schema_normalizer import parse_price, parse_year
 
 
 def _extract_text(node: Any) -> Optional[str]:
