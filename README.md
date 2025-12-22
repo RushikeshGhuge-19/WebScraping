@@ -4,21 +4,44 @@ Lightweight template collection and parsers for scraping UK/EU car dealer sites.
 
 This repository contains a small engine of HTML/JSON parsing templates used to
 discover listings, parse vehicle detail pages, and extract dealer metadata.
+# Car Scraper Templates
 
-## What’s included
-- `car_scraper/templates/` — canonical templates (listing, detail, pagination, dealer)
-  - Existing: card/grid/section listings, JSON-LD/microdata/meta fallbacks
-  - Added: `listing_json_api`, `listing_ajax_infinite`, `detail_image_gallery`
-- `car_scraper/db/mongo_store.py` — minimal MongoDB scaffold (upsert by `url`/`vin`)
-- `scripts/` — helper scripts:
-  - `run_template_smoke.py` — quick smoke test for a few templates
-  - `test_templates_on_samples.py` — run every template against `car_scraper/samples`
-  - `save_parsed_to_mongo.py` — load `scripts/sample_results.json` and save parsed docs to MongoDB
+Lightweight, template-driven parsers for extracting vehicle detail data and
+listing URLs from UK/EU car dealer pages. The project is intentionally
+conservative: templates parse HTML and embedded JSON (JSON-LD / microdata)
+without executing JavaScript by default. Optional headless rendering is
+available for sites that require JS execution.
+
+This repository is focused on reusable parsing templates (listing, detail,
+pagination, dealer) and a small engine that detects the appropriate template
+for a page and returns normalized vehicle/dealer output.
+
+---
+
+## Contents
+
+- `car_scraper/templates/` — canonical templates (detail, listing, pagination, dealer)
+- `car_scraper/utils/` — shared helpers and normalizers (`schema_normalizer`, JSON-LD helpers)
+- `car_scraper/db/` — optional MongoDB scaffold (`mongo_store.py`)
+- `car_scraper/samples/` — sample HTML fixtures used by runners and tests
+- `scripts/` — convenience scripts to run templates and save results
 - `requirements.txt` — runtime dependencies
 
-## Quick start
+---
 
-1. Create and activate a virtualenv (Windows example):
+## Key Features
+
+- Template-first architecture: add or extend templates without changing the engine.
+- Robust JSON-LD and microdata parsing with fallbacks to meta tags and HTML spec tables.
+- Canonical normalization into keys: `brand`, `model`, `year`, `price_value`,
+  `mileage_value`, `currency`, etc., via `car_scraper/templates/utils.finalize_detail_output`
+- Optional Selenium-based renderer for dynamic pages (`car_scraper/utils/renderer.py`).
+
+---
+
+## Installation
+
+1. Create and activate a virtual environment:
 
 ```powershell
 python -m venv .venv
@@ -28,58 +51,147 @@ python -m venv .venv
 2. Install dependencies:
 
 ```powershell
-E:\Scrapy\.venv\Scripts\python.exe -m pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-3. Run the smoke test:
+Notes:
+- `requirements.txt` includes `selenium` and `webdriver-manager` for optional
+  rendering. You only need those if you use the `--render` option in runners.
+
+---
+
+## Usage
+
+- Run the sample template runner (fast, no JS):
 
 ```powershell
-E:\Scrapy\.venv\Scripts\python.exe scripts/run_template_smoke.py
+python scripts/run_all_templates.py
 ```
 
-4. Run full sample pass (writes `scripts/sample_results.json`):
+- Run with headless Chrome rendering (slower, executes JS):
 
 ```powershell
-E:\Scrapy\.venv\Scripts\python.exe scripts/test_templates_on_samples.py
+python scripts/run_all_templates.py --render
 ```
 
-5. Optionally save parsed results to MongoDB (set `MONGO_URI` to your DB):
+- Quick smoke test:
+
+```powershell
+python scripts/run_template_smoke.py
+```
+
+- Save parsed JSON to MongoDB (set `MONGO_URI`, `MONGO_DB`, `MONGO_COLLECTION`):
 
 ```powershell
 $env:MONGO_URI = 'mongodb://localhost:27017'
-E:\Scrapy\.venv\Scripts\python.exe scripts/save_parsed_to_mongo.py
+python scripts/save_parsed_to_mongo.py
 ```
 
-## MongoDB scaffold
-The helper `car_scraper/db/mongo_store.py` uses `MONGO_URI`, `MONGO_DB`, and
-`MONGO_COLLECTION` environment variables. `save_listing()` will upsert based on
-`url` (preferred) or `vin` if present.
+---
 
-## Development notes
-- Templates are intentionally conservative and do not execute JavaScript;
-  they parse HTML and embedded JSON blocks. For heavy SPA pages you may need
-  to add a headless render step or site-specific parsers.
-  
-- Optional rendering: the project includes an optional Selenium-based
-  renderer to execute page JavaScript and obtain the final DOM. To use it:
+## Template Architecture
 
-  1. Ensure `selenium` and `webdriver-manager` are installed (they're listed in `requirements.txt`).
-  2. Run the sample runner with `--render` to have the runner load each
-     sample through a headless Chrome instance (slow, but useful for dynamic pages):
+Templates implement a small API (one or more of):
 
-     ```powershell
-     E:\Scrapy\.venv\Scripts\python.exe scripts/run_all_templates.py --render
-     ```
-- Add template classes to `car_scraper/templates/all_templates.py` to include
-  them in the canonical detection order.
+- `get_listing_urls(html, page_url)` — return list of detail URLs found on a
+  listing page.
+- `get_next_page(html, page_url)` — return a next-page URL when available.
+- `parse_car_page(html, page_url)` — for detail templates, return normalized
+  dicts that include canonical keys.
 
-## Running tests
-There are no formal unit tests yet. Use the sample runner in `scripts/` to
-exercise templates against the provided sample HTML pages.
+The authoritative set of templates is registered in
+[car_scraper/templates/all_templates.py](car_scraper/templates/all_templates.py).
+
+Canonical template names include (non-exhaustive):
+
+- Detail templates: `detail_hybrid_json_html`, `detail_jsonld_vehicle`,
+  `detail_inline_html_blocks`, `detail_html_spec_table`, `detail_image_gallery`
+- Listing templates: `listing_image_grid`, `listing_card`, `listing_ul_li`,
+  `listing_generic_anchor`, `listing_section`, `json_api_listing`, `listing_ajax_infinite`
+- Pagination: `pagination_query`, `pagination_path`
+- Dealer: `dealer_info_jsonld`
+
+Add new templates by creating a file under `car_scraper/templates/` and
+registering it in `all_templates.py` (preserving detection order).
+
+---
+
+## Normalization
+
+The project normalizes extracted fields into canonical keys using
+`car_scraper/utils/schema_normalizer.py` and `car_scraper/templates/utils.finalize_detail_output`.
+Normalized/expected keys include:
+
+- `brand`, `model`, `year`
+- `price_value`, `price_raw`, `currency`
+- `mileage_value`, `mileage_unit`
+- `fuel`, `transmission`, `description`, `raw`
+
+Templates should populate logical source fields and then call
+`finalize_detail_output()` to fill and normalize canonical fields.
+
+---
+
+## Selenium renderer (optional)
+
+If a site requires JavaScript to expose listing links or JSON-LD, an
+optional headless renderer is available at `car_scraper/utils/renderer.py`.
+Enable it with `--render` on the sample runner. The renderer uses
+`webdriver-manager` to install the matching ChromeDriver automatically.
+
+Caveats:
+- Starting a new headless browser per page is slow. For batch runs consider
+  reusing a single persistent driver (not implemented by default).
+- Ensure Chrome/Chromium is installed on the host runner when using the
+  renderer (CI runners typically have them preinstalled).
+
+---
+
+## Testing
+
+- Unit tests are in `car_scraper/tests/` and use `pytest`.
+- Run tests with:
+
+```powershell
+python -m pytest -q
+```
+
+I added a small set of regression tests for Dragon2000 fallbacks in
+`car_scraper/tests/test_dragon2000_fallbacks.py`.
+
+---
+
+## CI
+
+The repository includes a GitHub Actions workflow at
+`.github/workflows/ci.yml` that runs tests across Python 3.10–3.12 and
+generates a coverage report. Update repository secrets with `CODECOV_TOKEN`
+if you want automatic uploads to Codecov.
+
+---
 
 ## Contributing
-- Create a branch, add tests for new templates using `car_scraper/samples` as fixtures,
-  and open a PR against `feature/add-templates-mongo` or main as appropriate.
+
+Contributions should follow the template-first philosophy:
+
+1. Add focused templates or conservative fallbacks under `car_scraper/templates/`.
+2. Add tests in `car_scraper/tests/` using fixtures from `car_scraper/samples/`.
+3. Open a pull request explaining the change and why it preserves the
+   existing architecture.
+
+Please avoid changing the engine architecture unless absolutely necessary.
+
+---
+
+## Troubleshooting
+
+- If tests fail due to encoding or HTML parsing, ensure `lxml` is installed.
+- For Selenium issues, verify Chrome/Chromium is available and the
+  `webdriver-manager` can download drivers (CI environments may block downloads).
+
+---
 
 ## License
-MIT-style (add appropriate LICENSE file if required).
+
+MIT-style. Add an explicit `LICENSE` file if you need a different license.
