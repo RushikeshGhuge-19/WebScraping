@@ -4,13 +4,22 @@ This template extracts specs from common inline structures (dl/dt/dd,
 label/value pairs, .label/.value, .spec-row) and also includes meta-tag
 and microdata fallbacks when explicit structured data is missing.
 """
+from __future__ import annotations
+
 from typing import Dict, Any
-from bs4 import BeautifulSoup
 import re
-import html as _html
+from bs4 import BeautifulSoup
 from .base import CarTemplate
 from .utils import finalize_detail_output
 from ..utils.schema_normalizer import parse_mileage, parse_year, normalize_brand
+
+# Pre-compiled regex for key normalization
+_KEY_CLEAN_RE = re.compile(r'[^a-z0-9]+')
+
+
+def _normalize_key(key: str) -> str:
+    """Normalize spec key to lowercase alphanumeric with underscores."""
+    return _KEY_CLEAN_RE.sub('_', key.lower()).strip('_')
 
 
 class DetailInlineHTMLBlocks(CarTemplate):
@@ -19,7 +28,7 @@ class DetailInlineHTMLBlocks(CarTemplate):
     def _meta_fallback(self, soup: BeautifulSoup) -> Dict[str, Any]:
         out: Dict[str, Any] = {'_source': 'meta-fallback'}
 
-        def meta(name=None, prop=None):
+        def meta(name: str = None, prop: str = None) -> str | None:
             if prop:
                 tag = soup.find('meta', attrs={'property': prop})
                 if tag and tag.get('content'):
@@ -38,9 +47,9 @@ class DetailInlineHTMLBlocks(CarTemplate):
 
     def _microdata_fallback(self, soup: BeautifulSoup) -> Dict[str, Any]:
         out: Dict[str, Any] = {'_source': 'microdata-fallback'}
-        for tag in soup.find_all(attrs={"itemscope": True}):
-            it = tag.get('itemtype') or ''
-            if 'Vehicle' in it or 'vehicle' in it.lower():
+        for tag in soup.find_all(attrs={'itemscope': True}):
+            it = (tag.get('itemtype') or '').lower()
+            if 'vehicle' in it:
                 for prop in ('name', 'brand', 'model', 'description', 'price'):
                     node = tag.find(attrs={'itemprop': prop})
                     if node:
@@ -51,72 +60,68 @@ class DetailInlineHTMLBlocks(CarTemplate):
                 return finalize_detail_output(out)
         return finalize_detail_output(out)
 
+    def _extract_mileage(self, val: str, out: Dict[str, Any]) -> None:
+        """Extract mileage value and unit into output dict."""
+        if 'mileage' not in out:
+            out['mileage'] = val
+            m_val, m_unit = parse_mileage(val)
+            if m_val:
+                out['mileage_value'] = m_val
+                out['mileage_unit'] = m_unit
+
     def parse_car_page(self, html: str, car_url: str) -> Dict[str, Any]:
         soup = BeautifulSoup(html, 'lxml')
         out: Dict[str, Any] = {'_source': 'inline-blocks', 'specs': {}}
 
-        # Extract dl/dt/dd
+        # Extract dl/dt/dd pairs
         dl = soup.find('dl')
         if dl:
-            dts = dl.find_all('dt')
-            for dt in dts:
+            for dt in dl.find_all('dt'):
                 dd = dt.find_next_sibling('dd')
                 if not dd:
                     continue
                 key = dt.get_text(separator=' ').strip()
                 val = dd.get_text(separator=' ').strip()
-                nk = re.sub(r"[^a-z0-9]+", '_', key.lower()).strip('_')
+                nk = _normalize_key(key)
                 out['specs'][nk] = val
-                if 'mileage' in key.lower() and 'mileage' not in out:
-                    out['mileage'] = val
-                    m_val, m_unit = parse_mileage(val)
-                    if m_val:
-                        out['mileage_value'] = m_val
-                        out['mileage_unit'] = m_unit
-                if 'fuel' in key.lower() and 'fuel' not in out:
+                key_lower = key.lower()
+                if 'mileage' in key_lower:
+                    self._extract_mileage(val, out)
+                if 'fuel' in key_lower and 'fuel' not in out:
                     out['fuel'] = val
-                if 'transmission' in key.lower() and 'transmission' not in out:
+                if 'transmission' in key_lower and 'transmission' not in out:
                     out['transmission'] = val
 
         # label/value pairs (.label/.value or .spec-row)
         for label in soup.select('.label'):
             val = None
-            # common structure: <div class="label">Year</div><div class="value">2018</div>
             nxt = label.find_next_sibling()
             if nxt and 'value' in (nxt.get('class') or []):
                 val = nxt.get_text(strip=True)
             else:
-                # try within same parent
-                val = label.parent.select_one('.value')
-                if val:
-                    val = val.get_text(strip=True)
+                val_el = label.parent.select_one('.value')
+                if val_el:
+                    val = val_el.get_text(strip=True)
             if val:
                 key = label.get_text(separator=' ').strip()
-                nk = re.sub(r"[^a-z0-9]+", '_', key.lower()).strip('_')
+                nk = _normalize_key(key)
                 out['specs'][nk] = val
-                if 'mileage' in key.lower() and 'mileage' not in out:
-                    out['mileage'] = val
-                    m_val, m_unit = parse_mileage(val)
-                    if m_val:
-                        out['mileage_value'] = m_val
-                        out['mileage_unit'] = m_unit
-        # .spec-row style: <div class="spec-row"><span class="spec">Label</span><span class="value">Val</span></div>
+                if 'mileage' in key.lower():
+                    self._extract_mileage(val, out)
+
+        # .spec-row style
         for row in soup.select('.spec-row'):
             lab = row.select_one('.spec') or row.select_one('th')
             valn = row.select_one('.value') or row.select_one('td')
             if lab and valn:
                 key = lab.get_text(separator=' ').strip()
                 val = valn.get_text(separator=' ').strip()
-                nk = re.sub(r"[^a-z0-9]+", '_', key.lower()).strip('_')
+                nk = _normalize_key(key)
                 out['specs'][nk] = val
-                if 'mileage' in key.lower() and 'mileage' not in out:
-                    out['mileage'] = val
-                    m_val, m_unit = parse_mileage(val)
-                    if m_val:
-                        out['mileage_value'] = m_val
-                        out['mileage_unit'] = m_unit
+                if 'mileage' in key.lower():
+                    self._extract_mileage(val, out)
 
-        # If we found no inline data, try microdata then meta as fallbacks
+        # Fallbacks if no inline data found
         if not out['specs']:
             micro = self._microdata_fallback(soup)
             if micro and len(micro) > 1:
@@ -127,13 +132,13 @@ class DetailInlineHTMLBlocks(CarTemplate):
                 out.update(meta)
                 return finalize_detail_output(out)
 
-        # normalize brand/year if provided in specs
-        if out.get('specs'):
-            if out['specs'].get('brand') and not out.get('brand'):
-                out['brand'] = normalize_brand(out['specs'].get('brand'))
-            if out['specs'].get('year'):
-                y = parse_year(out['specs'].get('year'))
-                if y:
-                    out['year'] = y
+        # Normalize brand/year from specs
+        specs = out.get('specs', {})
+        if specs.get('brand') and not out.get('brand'):
+            out['brand'] = normalize_brand(specs.get('brand'))
+        if specs.get('year'):
+            y = parse_year(specs.get('year'))
+            if y:
+                out['year'] = y
 
         return finalize_detail_output(out)

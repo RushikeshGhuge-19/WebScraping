@@ -5,85 +5,97 @@ by DETAIL templates. It is intentionally a helper and MUST NOT be
 registered as a structural template. Structural templates should invoke
 these helpers where appropriate.
 """
-from typing import Dict, Any, Optional
+from __future__ import annotations
+
+from typing import Dict, Any
 import logging
 from .base import CarTemplate
 from .utils import make_soup
 from ..utils.schema_normalizer import parse_price, parse_mileage, parse_year, normalize_brand
 
+_logger = logging.getLogger(__name__)
 
-def _extract_text(node: Optional[Any]) -> Optional[str]:
+# Pre-built empty result for no-match case
+_EMPTY_RESULT: Dict[str, Any] = {
+    '_source': 'microdata',
+    '_raw': None,
+    'confidence': 0.0,
+    'name': None,
+    'brand': None,
+    'model': None,
+    'description': None,
+    'price_raw': None,
+    'price': None,
+    'currency': None,
+    'mileage': None,
+    'mileage_unit': None,
+    'year': None,
+}
+
+
+def _extract_text(node: Any) -> str | None:
     if node is None:
         return None
-    if getattr(node, 'get', None) and node.get('content'):
-        return node.get('content')
+    content = getattr(node, 'get', lambda k: None)('content')
+    if content:
+        return content
     try:
         return node.get_text(strip=True)
     except (AttributeError, TypeError, ValueError) as exc:
-        logger = logging.getLogger(__name__)
-        logger.debug("_extract_text fallback: %s", exc, exc_info=True)
+        _logger.debug("_extract_text fallback: %s", exc)
         return str(node).strip()
+
 
 class MicrodataVehicleTemplate(CarTemplate):
     name = 'microdata_vehicle'
 
-    def parse_car_page(self, html: str, car_url: str) -> Dict:
+    def parse_car_page(self, html: str, car_url: str) -> Dict[str, Any]:
         soup = make_soup(html)
-        # find the first itemscope that looks like a vehicle
+
+        # Find first itemscope that looks like a vehicle
         tag = None
-        for t in soup.find_all(attrs={"itemscope": True}):
-            itype = (t.get('itemtype') or '').lower()
-            if 'vehicle' in itype:
+        for t in soup.find_all(attrs={'itemscope': True}):
+            if 'vehicle' in (t.get('itemtype') or '').lower():
                 tag = t
                 break
 
         if not tag:
-            return {
-                '_source': 'microdata',
-                '_raw': None,
-                'confidence': 0.0,
-                'name': None,
-                'brand': None,
-                'model': None,
-                'description': None,
-                'price_raw': None,
-                'price': None,
-                'currency': None,
-                'mileage': None,
-                'mileage_unit': None,
-                'year': None,
-            }
-        out: Dict[str, Any] = {}
-        out['name'] = _extract_text(tag.find(attrs={'itemprop': 'name'}))
-        brand_raw = _extract_text(tag.find(attrs={'itemprop': 'brand'}))
-        out['brand'] = normalize_brand(brand_raw)
-        out['model'] = _extract_text(tag.find(attrs={'itemprop': 'model'}))
-        out['description'] = _extract_text(tag.find(attrs={'itemprop': 'description'}))
+            return _EMPTY_RESULT.copy()
 
-        # price
+        # Extract core fields
+        name = _extract_text(tag.find(attrs={'itemprop': 'name'}))
+        brand_raw = _extract_text(tag.find(attrs={'itemprop': 'brand'}))
+        model = _extract_text(tag.find(attrs={'itemprop': 'model'}))
+        description = _extract_text(tag.find(attrs={'itemprop': 'description'}))
+
+        # Price
         price_node = tag.find(attrs={'itemprop': 'price'}) or tag.find('meta', attrs={'itemprop': 'price'})
         price_raw = _extract_text(price_node)
         amt, cur = parse_price(price_raw)
-        out['price_raw'] = price_raw
-        out['price'] = amt
-        out['currency'] = cur
 
-        # mileage: common microdata props
+        # Mileage
         mileage_node = tag.find(attrs={'itemprop': 'mileageFromOdometer'}) or tag.find(attrs={'itemprop': 'mileage'})
-        mileage_txt = _extract_text(mileage_node)
-        mval, munit = parse_mileage(mileage_txt)
-        out['mileage'] = mval
-        out['mileage_unit'] = munit
+        mval, munit = parse_mileage(_extract_text(mileage_node))
 
-        # year
+        # Year
         year_node = tag.find(attrs={'itemprop': 'vehicleModelYear'}) or tag.find(attrs={'itemprop': 'year'})
-        year_txt = _extract_text(year_node)
-        out['year'] = parse_year(year_txt)
+        year = parse_year(_extract_text(year_node))
 
-        out['_raw'] = {k: v for k, v in tag.attrs.items()}
-        out['_source'] = 'microdata'
+        # Confidence: proportion of core fields present
+        core = sum(1 for v in (normalize_brand(brand_raw), model, amt) if v)
 
-        # confidence: proportion of core fields present
-        core = sum(1 for k in ('brand', 'model', 'price') if out.get(k))
-        out['confidence'] = round(core / 3.0, 2)
-        return out
+        return {
+            '_source': 'microdata',
+            '_raw': dict(tag.attrs),
+            'confidence': round(core / 3.0, 2),
+            'name': name,
+            'brand': normalize_brand(brand_raw),
+            'model': model,
+            'description': description,
+            'price_raw': price_raw,
+            'price': amt,
+            'currency': cur,
+            'mileage': mval,
+            'mileage_unit': munit,
+            'year': year,
+        }
