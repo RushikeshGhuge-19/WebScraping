@@ -3,59 +3,52 @@
 This minimal engine is intended for offline parsing of saved HTML files.
 It detects the most appropriate template for a page and dispatches parsing.
 """
-from typing import List, Optional, Tuple, Dict, Any, Type
+from __future__ import annotations
+
+from typing import List, Tuple, Dict, Any, Type
 import re
 from pathlib import Path
 import logging
-from bs4 import BeautifulSoup
 from .templates.utils import make_soup, extract_jsonld_objects, extract_meta_values, extract_microdata
 
 from .templates.all_templates import ALL_TEMPLATES, TEMPLATE_BY_NAME
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 # Allowed JSON-LD @type names for vehicle objects (case-insensitive)
-VEHICLE_TYPE_NAMES = {'vehicle', 'car', 'automobile', 'vehiclemodel'}
+_VEHICLE_TYPE_NAMES = frozenset(('vehicle', 'car', 'automobile', 'vehiclemodel'))
+
+# Pre-compiled regex for year detection
+_YEAR_RE = re.compile(r'(19\d{2}|20\d{2})')
 
 
 def _extract_jsonld_type_names(type_value: Any) -> List[str]:
-    """Extract normalized type names from JSON-LD @type field.
-    
-    # Handles:
-    - String types and full IRIs (splits on / and # to get local name)
-    - Lists of type strings or IRIs
-    Returns lowercase local type names.
-    """
+    """Extract normalized type names from JSON-LD @type field."""
     if isinstance(type_value, str):
         types = [type_value]
     elif isinstance(type_value, list):
         types = type_value
     else:
         return []
-    
-    result = []
+
+    result: List[str] = []
     for t in types:
-        if not isinstance(t, str):
-            continue
-        # Extract local type name from IRI (e.g., https://schema.org/Vehicle -> Vehicle)
-        local_name = t.split('/')[-1].split('#')[-1]
-        result.append(local_name.lower())
+        if isinstance(t, str):
+            # Extract local type name from IRI
+            local_name = t.rsplit('/', 1)[-1].rsplit('#', 1)[-1]
+            result.append(local_name.lower())
     return result
 
 
-def _is_jsonld_vehicle(obj: Dict) -> bool:
-    """Check if a JSON-LD object represents a vehicle type.
-    
-    Uses exact type matching against a whitelist to avoid false positives
-    from substring matches or stringified arrays.
-    """
+def _is_jsonld_vehicle(obj: Dict[str, Any]) -> bool:
+    """Check if a JSON-LD object represents a vehicle type."""
     if not isinstance(obj, dict):
         return False
     type_value = obj.get('@type')
     if not type_value:
         return False
     type_names = _extract_jsonld_type_names(type_value)
-    return any(t in VEHICLE_TYPE_NAMES for t in type_names)
+    return any(t in _VEHICLE_TYPE_NAMES for t in type_names)
 
 
 class TemplateRegistry:
@@ -97,57 +90,60 @@ class TemplateDetector:
 
     def detect(self, html: str, page_url: str):
         """Detect the most appropriate template using heuristic scoring."""
+        if not html:
+            return None
         # Parse HTML once for reuse
         soup = make_soup(html)
-        jsonld_objs = extract_jsonld_objects(html)
+        jsonld_objs = extract_jsonld_objects(soup=soup)
 
-        # Detect page features
+        # Detect page features (early exit checks first)
+        has_jsonld_vehicle = any(_is_jsonld_vehicle(o) for o in jsonld_objs) if jsonld_objs else False
+        
+        # If no JSON-LD vehicle and simple extraction, try cheaper detail checks
         has_table = bool(soup.find('table'))
         has_specs = bool(
             has_table
-            or soup.select('.spec-row')
-            or soup.select('.spec')
+            or soup.select('.spec-row', limit=1)
+            or soup.select('.spec', limit=1)
             or soup.find('dl')
-            or (soup.select('.label') and soup.select('.value'))
+            or (soup.select('.label', limit=1) and soup.select('.value', limit=1))
         )
-        has_jsonld_vehicle = any(
-            _is_jsonld_vehicle(o) for o in jsonld_objs
-        )
+        
         meta = extract_meta_values(soup)
         title_text = (meta.get('title') or '') if isinstance(meta, dict) else ''
-        has_title_year = bool(re.search(r"(19\d{2}|20\d{2})", title_text))
+        has_title_year = bool(_YEAR_RE.search(title_text))
         has_price_meta = bool(meta.get('price'))
-        has_microdata = bool(extract_microdata(html))
+        has_microdata = bool(extract_microdata(soup=soup))
 
         candidates: List[Tuple[Any, str, float]] = []
 
-        # Score detail templates
-        detail_scores = dict(self.DETAIL_TEMPLATES)
-        if has_jsonld_vehicle and has_specs:
-            detail_scores['detail_hybrid_json_html'] += 3
-        if has_jsonld_vehicle:
-            detail_scores['detail_jsonld_vehicle'] += 2
-        # boost detail candidates when price metadata or year in title present
-        if has_price_meta:
-            detail_scores['detail_jsonld_vehicle'] += 2
-            detail_scores['detail_hybrid_json_html'] += 1
-        if has_title_year:
-            detail_scores['detail_inline_html_blocks'] += 2
-        if has_microdata:
-            # microdata often maps to inline blocks
-            detail_scores['detail_inline_html_blocks'] += 2
-        if has_specs:
-            detail_scores['detail_inline_html_blocks'] += 1
-        if has_table:
-            detail_scores['detail_html_spec_table'] += 1
+        # Score detail templates only if likely to be detail page
+        if has_jsonld_vehicle or has_specs or has_table or has_title_year or has_price_meta or has_microdata:
+            detail_scores = dict(self.DETAIL_TEMPLATES)
+            if has_jsonld_vehicle and has_specs:
+                detail_scores['detail_hybrid_json_html'] += 3
+            if has_jsonld_vehicle:
+                detail_scores['detail_jsonld_vehicle'] += 2
+            if has_price_meta:
+                detail_scores['detail_jsonld_vehicle'] += 2
+                detail_scores['detail_hybrid_json_html'] += 1
+            if has_title_year:
+                detail_scores['detail_inline_html_blocks'] += 2
+            if has_microdata:
+                detail_scores['detail_inline_html_blocks'] += 2
+            if has_specs:
+                detail_scores['detail_inline_html_blocks'] += 1
+            if has_table:
+                detail_scores['detail_html_spec_table'] += 1
 
-        for name, score in detail_scores.items():
-            cls = TEMPLATE_BY_NAME.get(name)
-            if not cls or score <= 0:
-                continue
-            tpl = cls()
-            normalized_score = self._normalize_detail_score(score)
-            candidates.append((tpl, 'detail', normalized_score))
+            for name, score in detail_scores.items():
+                if score <= 0:
+                    continue
+                cls = TEMPLATE_BY_NAME.get(name)
+                if cls:
+                    tpl = cls()
+                    normalized_score = self._normalize_detail_score(score)
+                    candidates.append((tpl, 'detail', normalized_score))
 
         # Score listing templates by URL count
         for name in self.LISTING_TEMPLATES:
@@ -161,10 +157,9 @@ class TemplateDetector:
                     normalized = self._normalize_listing_score(len(urls))
                     candidates.append((tpl, 'listing', normalized))
             except NotImplementedError:
-                # Expected for templates that don't implement this method
                 pass
             except Exception as e:
-                logger.exception(f"Error scoring {name}.get_listing_urls: {e}")
+                _logger.exception("Error scoring %s.get_listing_urls: %s", name, e)
 
         # Score pagination templates (constant weight)
         for name in self.PAGINATION_TEMPLATES:
@@ -176,32 +171,34 @@ class TemplateDetector:
                 if tpl.get_next_page(html, page_url):
                     candidates.append((tpl, 'pagination', float(self.PAGINATION_SCORE)))
             except NotImplementedError:
-                # Expected for templates that don't implement this method
                 pass
             except Exception as e:
-                logger.exception(f"Error scoring {name}.get_next_page: {e}")
+                _logger.exception("Error scoring %s.get_next_page: %s", name, e)
 
         # Score dealer template if Organization JSON-LD present
-        dealer_cls = TEMPLATE_BY_NAME.get('dealer_info_jsonld')
-        if dealer_cls:
-            for o in jsonld_objs:
-                if isinstance(o, dict) and any(
-                    x in str(o.get('@type', ''))
-                    for x in ('Organization', 'AutomotiveBusiness')
-                ):
-                    candidates.append((dealer_cls(), 'dealer', float(self.DEALER_SCORE)))
-                    break
+        if jsonld_objs:
+            dealer_cls = TEMPLATE_BY_NAME.get('dealer_info_jsonld')
+            if dealer_cls:
+                for o in jsonld_objs:
+                    if isinstance(o, dict) and any(
+                        x in str(o.get('@type', ''))
+                        for x in ('Organization', 'AutomotiveBusiness')
+                    ):
+                        candidates.append((dealer_cls(), 'dealer', float(self.DEALER_SCORE)))
+                        break
 
         if not candidates:
             return None
 
-        max_score = max(score for _, _, score in candidates)
+        max_score = max((score for _, _, score in candidates), default=0)
+        if max_score == 0:
+            return None
         best = [(tpl, categ) for tpl, categ, score in candidates if score == max_score]
 
         if len(best) == 1:
             return best[0][0]
 
-        priority = max(self.TYPE_PRIORITY.get(categ, 0) for _, categ in best)
+        priority = max((self.TYPE_PRIORITY.get(categ, 0) for _, categ in best), default=0)
         priority_candidates = [item for item in best if self.TYPE_PRIORITY.get(item[1], 0) == priority]
 
         if len(priority_candidates) == 1:
@@ -228,7 +225,7 @@ class ScraperEngine:
         self.registry = TemplateRegistry()
         self.detector = TemplateDetector(self.registry)
 
-    def scrape_file(self, file_path: Path, use_renderer: bool = False) -> Dict[str, Any]:
+    def scrape_file(self, file_path: Union[Path, str], use_renderer: bool = False) -> Dict[str, Any]:
         """Detect template and return structured output dict with explicit
         keys: 'car' for car detail dicts, 'dealer' for dealer info dicts.
 
@@ -236,24 +233,69 @@ class ScraperEngine:
         'listing_urls' for downstream crawlers but those are NOT emitted to
         CSV by the runner.
         """
-        if use_renderer:
+        # Determine how to obtain the content:
+        # - local Path -> read file
+        # - file:// URI -> treat as local file unless renderer requested
+        # - http/https -> use HttpFetcher or renderer
+        html = None
+        # If argument is a Path and exists, read it
+        if isinstance(file_path, Path) and file_path.exists():
             try:
-                # Use the optional Selenium renderer to load dynamic pages.
-                from .utils.renderer import render_url
-
-                html = render_url(f'file://{file_path.resolve()}', wait=1.0)
-            except Exception:
-                # Fall back to reading raw file if renderer fails
                 html = file_path.read_text(encoding='utf-8', errors='ignore')
-        else:
-            html = file_path.read_text(encoding='utf-8', errors='ignore')
+            except Exception:
+                html = ''
+
+        # If it's a string, decide by scheme
+        if html is None:
+            src = str(file_path)
+            if src.startswith('file://'):
+                # local file URI
+                if use_renderer:
+                    try:
+                        from .utils.renderer import render_url
+
+                        html = render_url(src, wait=1.0)
+                    except Exception:
+                        # fallback to reading path portion
+                        try:
+                            p = Path(src.replace('file://', ''))
+                            html = p.read_text(encoding='utf-8', errors='ignore')
+                        except Exception:
+                            html = ''
+                else:
+                    try:
+                        p = Path(src.replace('file://', ''))
+                        html = p.read_text(encoding='utf-8', errors='ignore')
+                    except Exception:
+                        html = ''
+            elif src.startswith('http://') or src.startswith('https://'):
+                if use_renderer:
+                    try:
+                        from .utils.renderer import render_url
+
+                        html = render_url(src, wait=1.0)
+                    except Exception:
+                        html = ''
+                else:
+                    try:
+                        from fetchers.http_fetcher import fetch as http_fetch
+
+                        html = http_fetch(src, timeout=30)
+                    except Exception:
+                        html = ''
+            else:
+                # Treat as local path string
+                try:
+                    p = Path(src)
+                    html = p.read_text(encoding='utf-8', errors='ignore')
+                except Exception:
+                    html = ''
         tpl = self.detector.detect(html, str(file_path))
         tpl_name = tpl.name if tpl is not None else 'no_template'
-        result: Dict[str, Any] = {'sample': file_path.name, 'template': tpl_name}
+        result: Dict[str, Any] = {'sample': file_path.name if hasattr(file_path, 'name') else str(file_path), 'template': tpl_name}
 
         if tpl is None:
-            logger.warning('No template detected for sample %s', file_path.name)
-            # return early with empty parsed fields
+            _logger.warning('No template detected for sample %s', result['sample'])
             result['car'] = None
             result['dealer'] = None
             return result
@@ -263,18 +305,18 @@ class ScraperEngine:
         listing_urls = None
 
         # Allowed detail templates names (authoritative)
-        detail_names = {
+        detail_names = frozenset((
             'detail_jsonld_vehicle',
             'detail_html_spec_table',
             'detail_hybrid_json_html',
             'detail_inline_html_blocks',
-        }
+        ))
 
         # Listing templates (do not emit rows)
-        listing_names = {'listing_card', 'listing_image_grid', 'listing_section'}
+        listing_names = frozenset(('listing_card', 'listing_image_grid', 'listing_section'))
 
         # Pagination templates (no rows)
-        pagination_names = {'pagination_query', 'pagination_path'}
+        pagination_names = frozenset(('pagination_query', 'pagination_path'))
 
         # Dealer template name
         dealer_name = 'dealer_info_jsonld'
@@ -290,20 +332,12 @@ class ScraperEngine:
         elif tpl.name == dealer_name:
             dealer = parsed
         elif tpl.name in listing_names:
-            # try to extract listing URLs but do not produce car rows here
             try:
                 listing_urls = tpl.get_listing_urls(html, str(file_path))
             except Exception:
                 listing_urls = None
-        elif tpl.name in pagination_names:
-            # pagination: no rows
-            pass
-        else:
-            # Unknown/unsupported template: do not let it emit car rows.
-            # If it returned parsed data, keep it for debugging but do not
-            # treat as car/dealer emission.
-            if parsed:
-                result['parsed_debug'] = parsed
+        elif tpl.name not in pagination_names and parsed:
+            result['parsed_debug'] = parsed
 
         result['car'] = car
         result['dealer'] = dealer

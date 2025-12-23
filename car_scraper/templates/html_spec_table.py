@@ -3,17 +3,22 @@
 This is intentionally minimal: it finds table rows with a <th> and <td>
 and converts the heading into a normalized key (lowercase, underscores).
 """
+from __future__ import annotations
+
 from typing import Dict, Any
 import re
 from bs4 import BeautifulSoup
 from .base import CarTemplate
 
+# Pre-compiled regex for key normalization
+_KEY_CLEAN_RE = re.compile(r'[^a-z0-9]+')
+_UNDERSCORE_RE = re.compile(r'__+')
+
 
 def _normalize_key(k: str) -> str:
     """Normalize key: lowercase, alphanumeric + underscore, collapse underscores."""
-    k = k.strip().lower()
-    k = re.sub(r"[^a-z0-9]+", '_', k)
-    k = re.sub(r'__+', '_', k)
+    k = _KEY_CLEAN_RE.sub('_', k.strip().lower())
+    k = _UNDERSCORE_RE.sub('_', k)
     return k.strip('_')
 
 
@@ -27,15 +32,14 @@ class HTMLSpecTableTemplate(CarTemplate):
         if not table:
             return {'_source': 'html-table', 'specs': {}}
         
-        specs = {}
+        specs: Dict[str, str] = {}
         for tr in table.find_all('tr'):
             cells = tr.find_all(['th', 'td'], recursive=False)
-            if len(cells) < 2:
-                continue
-            # First cell is key, second is value
-            key = cells[0].get_text(strip=True)
-            val = cells[1].get_text(strip=True)
-            nk = _normalize_key(key)
-            specs[nk] = val
+            if len(cells) >= 2:
+                key = cells[0].get_text(strip=True)
+                val = cells[1].get_text(strip=True)
+                nk = _normalize_key(key)
+                if nk:
+                    specs[nk] = val
         
         return {'_source': 'html-table', 'specs': specs}

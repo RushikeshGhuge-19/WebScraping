@@ -6,18 +6,37 @@ return the fully rendered page source. The functions are intentionally
 small and synchronous for use in sample runners and optional rendering
 paths in the engine.
 """
+from __future__ import annotations
+
 from typing import Optional
 import time
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
+
+# Lazy imports to avoid loading Selenium when not needed
+_webdriver = None
+_Service = None
+_Options = None
+_ChromeDriverManager = None
 
 
-def _make_options(headless: bool = True, width: int = 1200, height: int = 800) -> Options:
-    opts = Options()
+def _ensure_imports():
+    """Lazy-load Selenium dependencies on first use."""
+    global _webdriver, _Service, _Options, _ChromeDriverManager
+    if _webdriver is None:
+        from selenium import webdriver as wd
+        from selenium.webdriver.chrome.service import Service
+        from selenium.webdriver.chrome.options import Options
+        from webdriver_manager.chrome import ChromeDriverManager
+        _webdriver = wd
+        _Service = Service
+        _Options = Options
+        _ChromeDriverManager = ChromeDriverManager
+
+
+def _make_options(headless: bool = True, width: int = 1200, height: int = 800):
+    """Create Chrome options with common flags."""
+    _ensure_imports()
+    opts = _Options()
     if headless:
-        # modern chrome prefers --headless=new; keep compatibility
         opts.add_argument('--headless=new')
     opts.add_argument(f'--window-size={width},{height}')
     opts.add_argument('--no-sandbox')
@@ -32,14 +51,14 @@ def render_url(url: str, wait: float = 1.0, headless: bool = True, timeout: int 
     `wait` gives the page a few seconds to execute JS. This is intentionally
     conservative; callers can increase wait time for heavy pages.
     """
+    _ensure_imports()
     opts = _make_options(headless=headless)
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=opts)
+    service = _Service(_ChromeDriverManager().install())
+    driver = _webdriver.Chrome(service=service, options=opts)
     try:
         driver.set_page_load_timeout(timeout)
         driver.get(url)
-        # simple wait to allow XHR/DOM updates; caller may tune
-        if wait:
+        if wait > 0:
             time.sleep(wait)
         return driver.page_source
     finally:
@@ -55,6 +74,5 @@ def render_html(html: str, wait: float = 0.5, headless: bool = True, timeout: in
     Note: very large HTML blobs may hit URL length limits; prefer `render_url`
     when possible (for file:// paths or HTTP URLs).
     """
-    # data: URL; ensure encoding is safe for basic HTML content.
     data_url = 'data:text/html;charset=utf-8,' + html
     return render_url(data_url, wait=wait, headless=headless, timeout=timeout)

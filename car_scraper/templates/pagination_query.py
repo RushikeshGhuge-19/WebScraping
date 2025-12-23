@@ -3,42 +3,47 @@
 This template focuses only on recognizing and constructing next-page URLs
 using a `page` query parameter.
 """
-from typing import Optional
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, parse_qsl
-from .base import CarTemplate
+from __future__ import annotations
+
+from typing import List, Dict, Any
+from urllib.parse import urlparse, urlencode, urlunparse, parse_qsl
 from bs4 import BeautifulSoup
+from .base import CarTemplate
 
 
 class PaginationQueryTemplate(CarTemplate):
     name = 'pagination_query'
 
-    def get_next_page(self, html: str, page_url: str) -> Optional[str]:
-        # Try rel=next
+    def get_next_page(self, html: str, page_url: str) -> str | None:
         soup = BeautifulSoup(html, 'lxml')
+
+        # Try rel=next
         link = soup.find('a', rel=lambda x: x and 'next' in x.lower())
-        if link and link.get('href'):
-            return link['href']
+        if link:
+            href = link.get('href')
+            if href:
+                return href
 
         # Fallback: find any link with ?page= in href
         for a in soup.find_all('a', href=True):
-            if '?page=' in a['href'] or '&page=' in a['href']:
-                return a['href']
+            href = a['href']
+            if '?page=' in href or '&page=' in href:
+                return href
 
-        # As a last resort, try to increment page parameter on current URL
+        # Last resort: increment page parameter on current URL
         parsed = urlparse(page_url)
         qs = dict(parse_qsl(parsed.query or ''))
         if 'page' in qs:
             try:
                 cur = int(qs['page'])
                 qs['page'] = str(cur + 1)
-                new_query = urlencode(qs)
-                return urlunparse(parsed._replace(query=new_query))
-            except Exception:
-                return None
+                return urlunparse(parsed._replace(query=urlencode(qs)))
+            except ValueError:
+                pass
         return None
 
-    def get_listing_urls(self, html: str, page_url: str):
+    def get_listing_urls(self, html: str, page_url: str) -> List[str]:
         raise NotImplementedError()
 
-    def parse_car_page(self, html: str, car_url: str):
+    def parse_car_page(self, html: str, car_url: str) -> Dict[str, Any]:
         raise NotImplementedError()

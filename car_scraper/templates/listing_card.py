@@ -3,7 +3,8 @@
 Delegates to CardListingTemplate to preserve a canonical template name
 while avoiding duplication.
 """
-from typing import List
+from __future__ import annotations
+
 from .card_listing import CardListingTemplate
 
 

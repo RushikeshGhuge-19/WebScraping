@@ -3,6 +3,8 @@
 This wrapper preserves the authoritative filename while reusing the
 previous `JSONLDVehicleTemplate` implementation to avoid duplication.
 """
+from __future__ import annotations
+
 from typing import Dict, Any
 from .jsonld_vehicle import JSONLDVehicleTemplate
 from .utils import extract_microdata, make_soup, extract_meta_values, finalize_detail_output
@@ -11,16 +13,16 @@ from .utils import extract_microdata, make_soup, extract_meta_values, finalize_d
 class DetailJSONLDVehicle(JSONLDVehicleTemplate):
     name = 'detail_jsonld_vehicle'
 
-    # inherits parse_car_page from JSONLDVehicleTemplate
     def parse_car_page(self, html: str, car_url: str) -> Dict[str, Any]:
         out = super().parse_car_page(html, car_url)
+
         # If JSON-LD returned nothing useful, try microdata/meta fallbacks
-        useful = bool(out.get('name') or out.get('brand') or out.get('price'))
-        if not useful:
-            # try microdata
-            micro_list = extract_microdata(html)
+        if not (out.get('name') or out.get('brand') or out.get('price')):
+            soup = make_soup(html)
+
+            # Try microdata
+            micro_list = extract_microdata(soup=soup)
             if micro_list:
-                # prefer first reasonably populated microdata object
                 for micro in micro_list:
                     if micro.get('price') or micro.get('name'):
                         micro['_source'] = 'microdata-fallback'
@@ -28,8 +30,7 @@ class DetailJSONLDVehicle(JSONLDVehicleTemplate):
                         out.update(micro)
                         return finalize_detail_output(out)
 
-            # meta fallback
-            soup = make_soup(html)
+            # Meta fallback
             meta = extract_meta_values(soup)
             if meta and (meta.get('price') or meta.get('title')):
                 meta['_source'] = 'meta-fallback'

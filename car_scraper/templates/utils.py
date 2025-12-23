@@ -11,6 +11,19 @@ import re
 import warnings
 from bs4 import BeautifulSoup
 
+# Pre-compiled regex patterns for performance (avoid recompilation)
+_RE_YEAR = re.compile(r'\b(19\d{2}|20\d{2})\b')
+_RE_YEAR_2DIGIT = re.compile(r'\b(\d{2})\b')
+_RE_VERSION = re.compile(r'^(\d+)')
+_RE_JSON_ASSIGN = re.compile(r'={1}\s*({[\s\S]+})')
+_RE_CURRENCY_CODE = re.compile(r'\b(GBP|USD|EUR|AUD|CAD|JPY|CHF)\b', re.I)
+_RE_PRICE_SYMBOLS = re.compile(r'[A-Za-z£$€¥,\s]+')
+_RE_PRICE_CLEAN = re.compile(r'[^0-9\.\-]')
+_RE_KM_UNIT = re.compile(r'\bkm\b|kilomet')
+_RE_MILEAGE_RANGE = re.compile(r'([0-9,.kK]+)\s*[-–—]\s*([0-9,.kK]+)')
+_RE_MILEAGE_NUMERIC = re.compile(r'([0-9,.]+)\s*(k)?')
+_RE_MILEAGE_K = re.compile(r'([0-9,.]+)\s*k', re.I)
+
 try:
     from packaging.version import parse as parse_version
 except ImportError:
@@ -21,7 +34,7 @@ except ImportError:
             parts = []
             for part in version_str.split('.'):
                 # Extract leading digits, ignore non-numeric suffixes
-                match = re.match(r'^(\d+)', part)
+                match = _RE_VERSION.match(part)
                 if match:
                     parts.append(int(match.group(1)))
             return tuple(parts) if parts else (0,)
@@ -58,8 +71,11 @@ def make_soup(html: str) -> BeautifulSoup:
         return BeautifulSoup(html, 'lxml')
 
 
-def extract_jsonld_objects(html: str) -> List[Dict[str, Any]]:
-    soup = make_soup(html)
+def extract_jsonld_objects(html: Optional[str] = None, soup: Optional[BeautifulSoup] = None) -> List[Dict[str, Any]]:
+    if soup is None:
+        if not html:
+            return []
+        soup = make_soup(html)
     out: List[Dict[str, Any]] = []
     for tag in soup.find_all('script', type='application/ld+json'):
         raw = tag.string or ''
@@ -68,7 +84,7 @@ def extract_jsonld_objects(html: str) -> List[Dict[str, Any]]:
             data = json.loads(_html.unescape(raw))
         except Exception:
             # try to extract a JSON object from an assignment (window.__STATE__ = {...})
-            m = re.search(r'={1}\s*({[\s\S]+})', raw)
+            m = _RE_JSON_ASSIGN.search(raw)
             if m:
                 try:
                     data = json.loads(m.group(1))
@@ -107,8 +123,11 @@ def extract_meta_values(soup: BeautifulSoup) -> Dict[str, Optional[str]]:
     return out
 
 
-def extract_microdata(html: str) -> List[Dict[str, Any]]:
-    soup = make_soup(html)
+def extract_microdata(html: Optional[str] = None, soup: Optional[BeautifulSoup] = None) -> List[Dict[str, Any]]:
+    if soup is None:
+        if not html:
+            return []
+        soup = make_soup(html)
     results: List[Dict[str, Any]] = []
     for tag in soup.find_all(attrs={"itemscope": True}):
         it = tag.get('itemtype') or ''
@@ -140,32 +159,35 @@ def parse_price(txt: Optional[str]):
     if not txt:
         return None, None
     s = str(txt).strip()
+    if not s:
+        return None, None
+    
     # common currency symbols
     cur = None
     # detect currency code like GBP, USD
-    m_code = re.search(r"\b(GBP|USD|EUR|AUD|CAD|JPY|CHF)\b", s, re.I)
+    m_code = _RE_CURRENCY_CODE.search(s)
     if m_code:
         cur = m_code.group(1).upper()
-    # common symbols
-    if s.startswith('£'):
+    # common symbols (early exit for common prefixes)
+    if s and s[0] == '£':
         cur = cur or 'GBP'
         s = s.lstrip('£')
-    if s.startswith('$'):
+    elif s and s[0] == '$':
         cur = cur or 'USD'
         s = s.lstrip('$')
-    if s.startswith('€'):
+    elif s and s[0] == '€':
         cur = cur or 'EUR'
         s = s.lstrip('€')
 
     # remove currency letters/symbols intermixed
-    s = re.sub(r"[A-Za-z£$€¥,\s]+", '', s)    # fallback: strip non-digit except dot
-    s = re.sub(r"[^0-9\.\-]", '', s)
+    s = _RE_PRICE_SYMBOLS.sub('', s)
+    s = _RE_PRICE_CLEAN.sub('', s)
     if not s:
         return None, cur
     try:
         amt = float(s)
         return amt, cur
-    except Exception:
+    except (ValueError, AttributeError):
         return None, cur
 
 
@@ -178,11 +200,13 @@ def parse_mileage(txt: Optional[str]):
     if not txt:
         return None, None
     s = str(txt).strip().lower()
+    if not s:
+        return None, None
 
     # detect unit in text
-    is_km = bool(re.search(r'\bkm\b|kilomet', s))
+    is_km = bool(_RE_KM_UNIT.search(s))
     # handle ranges like '12-15k' or '12k-15k'
-    m_range = re.search(r'([0-9,.kK]+)\s*[-–—]\s*([0-9,.kK]+)', s)
+    m_range = _RE_MILEAGE_RANGE.search(s)
     if m_range:
         left = m_range.group(1)
         right = m_range.group(2)
@@ -193,37 +217,33 @@ def parse_mileage(txt: Optional[str]):
         s_val = left
     else:
         # try to find first numeric token
-        m = re.search(r'([0-9,.]+)\s*(k)?', s)
+        m = _RE_MILEAGE_NUMERIC.search(s)
         if not m:
             return None, None
         s_val = m.group(1)
         k_marker = m.group(2)
 
     # handle 'k' shorthand
-    # decide whether 'k' applies: either the extracted s_val contains k
-    # (range-handled) or the original string had a 'k' marker
     has_k = 'k' in s_val.lower() or (m_range is None and 'k' in s.lower())
     if has_k:
         # extract the numeric part and multiply
-        m2 = re.search(r'([0-9,.]+)\s*k', s_val + 'k', re.I)
+        m2 = _RE_MILEAGE_K.search(s_val + 'k')
         if m2:
             try:
                 base = float(m2.group(1).replace(',', '')) * 1000
-            except Exception:
+            except (ValueError, AttributeError):
                 base = None
         else:
             base = None
     else:
         try:
             base = float(s_val.replace(',', ''))
-        except Exception:
+        except (ValueError, AttributeError):
             base = None
 
     if base is None:
         return None, None
 
-    # if parsed value looks like thousands (e.g., 12 -> 12), but we saw k marker absent,
-    # we keep as-is. If value < 200 and no 'k' but context contains comma, it's thousands already.
     # Convert km to miles when detected
     value = int(round(base))
     if is_km:
@@ -239,20 +259,22 @@ def parse_year(txt: Optional[str]):
     """
     if not txt:
         return None
-    s = str(txt)
+    s = str(txt).strip()
+    if not s:
+        return None
     # look for 4-digit year first
-    m = re.search(r"\b(19\d{2}|20\d{2})\b", s)
+    m = _RE_YEAR.search(s)
     if m:
         try:
-            y = int(m.group(0))
+            y = int(m.group(1))
             # sanity check
             if 1900 <= y <= 2030:
                 return y
-        except Exception:
+        except (ValueError, AttributeError):
             pass
 
     # fallback: 2-digit year -> map to 2000-2099 when <=30 else 1900s
-    m2 = re.search(r"\b(\d{2})\b", s)
+    m2 = _RE_YEAR_2DIGIT.search(s)
     if m2:
         try:
             yy = int(m2.group(1))
@@ -260,7 +282,7 @@ def parse_year(txt: Optional[str]):
                 return 2000 + yy
             else:
                 return 1900 + yy
-        except Exception:
+        except (ValueError, AttributeError):
             return None
     return None
 

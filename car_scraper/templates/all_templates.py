@@ -26,6 +26,7 @@ Pagination templates (no rows):
 Dealer info (site-level entity):
 - dealer_info_jsonld
 """
+from __future__ import annotations
 
 from .listing_card import ListingCard
 from .listing_image_grid import ListingImageGrid
@@ -45,10 +46,7 @@ from .pagination_path import PaginationPathTemplate
 from .dealer_info import DealerInfoTemplate as DealerInfoJSONLD
 
 
-# To satisfy the canonical structural names we provide lightweight aliases
-# (these inherit existing implementations; no new scraping logic is added).
-
-
+# Lightweight aliases for canonical structural names
 class ListingULLI(GridListingTemplate):
     name = 'listing_ul_li'
 
@@ -58,7 +56,7 @@ class ListingGenericAnchor(CardListingTemplate):
 
 
 # Authoritative detection order (detail first, then listings/pagination, then dealer)
-ALL_TEMPLATES = [
+ALL_TEMPLATES: tuple = (
     DetailHybridJSONHTML,
     DetailJSONLDVehicle,
     DetailInlineHTMLBlocks,
@@ -72,10 +70,9 @@ ALL_TEMPLATES = [
     PaginationQueryTemplate,
     PaginationPathTemplate,
     DealerInfoJSONLD,
-]
-
+)
 
 # Map by canonical template name -> class
-TEMPLATE_BY_NAME = {cls.name: cls for cls in ALL_TEMPLATES}
+TEMPLATE_BY_NAME: dict = {cls.name: cls for cls in ALL_TEMPLATES}
 
-__all__ = ["ALL_TEMPLATES", "TEMPLATE_BY_NAME"]
+__all__ = ('ALL_TEMPLATES', 'TEMPLATE_BY_NAME')

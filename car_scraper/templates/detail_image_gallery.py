@@ -4,6 +4,8 @@ Collects images from JSON-LD, Open Graph, gallery/carousel DOMs, and
 `img` elements with `data-src`/`data-large` fallbacks. Returns a dict
 with `images` and `videos` lists.
 """
+from __future__ import annotations
+
 from typing import Dict, Any, List
 import json
 import re
@@ -12,6 +14,12 @@ from bs4 import BeautifulSoup
 from .base import CarTemplate
 
 _SCRIPT_JSONLD_RE = re.compile(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', re.I | re.S)
+
+# Gallery CSS selectors (combined for efficiency)
+_GALLERY_SELECTORS = '.gallery, .carousel, .thumbnails, .slider, ul.gallery'
+
+# Large image hint keywords
+_LARGE_HINTS = frozenset(('large', 'full', 'zoom', '1024', '800'))
 
 
 class DetailImageGallery(CarTemplate):
@@ -22,7 +30,7 @@ class DetailImageGallery(CarTemplate):
         for raw in _SCRIPT_JSONLD_RE.findall(html):
             try:
                 data = json.loads(raw)
-            except Exception:
+            except (json.JSONDecodeError, ValueError):
                 continue
             items = data if isinstance(data, list) else [data]
             for item in items:
@@ -32,22 +40,20 @@ class DetailImageGallery(CarTemplate):
                 if isinstance(img, str):
                     out.append(urljoin(base, img))
                 elif isinstance(img, list):
-                    for i in img:
-                        if isinstance(i, str):
-                            out.append(urljoin(base, i))
+                    out.extend(urljoin(base, i) for i in img if isinstance(i, str))
         return out
 
     def _collect_from_dom(self, soup: BeautifulSoup, base: str) -> List[str]:
         out: List[str] = []
-        # common gallery selectors
-        for sel in ('.gallery', '.carousel', '.thumbnails', '.slider', 'ul.gallery'):
-            for container in soup.select(sel):
-                for img in container.find_all('img'):
-                    src = img.get('data-large') or img.get('data-src') or img.get('src') or img.get('data-original')
-                    if src:
-                        out.append(urljoin(base, src))
 
-        # Dragon2000 specific selectors: side-thumbs carousel and container links
+        # Common gallery selectors
+        for container in soup.select(_GALLERY_SELECTORS):
+            for img in container.find_all('img'):
+                src = img.get('data-large') or img.get('data-src') or img.get('src') or img.get('data-original')
+                if src:
+                    out.append(urljoin(base, src))
+
+        # Dragon2000 specific selectors
         for a in soup.select('div.vehicle-content-slider--side-thumbs__carousel a[href], div.vehicle-content-slider-container a[href]'):
             href = a.get('href')
             if href:
@@ -58,19 +64,20 @@ class DetailImageGallery(CarTemplate):
             if src:
                 out.append(urljoin(base, src))
 
-        # fallback: any img with zoom/large hints
+        # Fallback: any img with large/zoom hints
         for img in soup.find_all('img'):
             src = img.get('data-large') or img.get('data-src') or img.get('src')
-            if not src:
-                continue
-            # prefer larger images (heuristic: filenames containing large, full, zoom)
-            if any(t in src.lower() for t in ('large', 'full', 'zoom', '1024', '800')):
-                out.append(urljoin(base, src))
+            if src:
+                src_lower = src.lower()
+                if any(h in src_lower for h in _LARGE_HINTS):
+                    out.append(urljoin(base, src))
 
         # OG image
         og = soup.find('meta', attrs={'property': 'og:image'})
-        if og and og.get('content'):
-            out.append(urljoin(base, og['content']))
+        if og:
+            content = og.get('content')
+            if content:
+                out.append(urljoin(base, content))
 
         return out
 
@@ -88,14 +95,12 @@ class DetailImageGallery(CarTemplate):
 
     def parse_car_page(self, html: str, car_url: str) -> Dict[str, Any]:
         soup = BeautifulSoup(html, 'lxml')
-        images: List[str] = []
 
-        images.extend(self._collect_from_jsonld(html, car_url))
+        images = self._collect_from_jsonld(html, car_url)
         images.extend(self._collect_from_dom(soup, car_url))
-        # dedupe while preserving order
-        images = list(dict.fromkeys([i for i in images if i]))
+        # Dedupe while preserving order
+        images = list(dict.fromkeys(i for i in images if i))
 
-        videos = self._collect_videos(soup, car_url)
-        videos = list(dict.fromkeys(videos))
+        videos = list(dict.fromkeys(self._collect_videos(soup, car_url)))
 
         return {'_source': 'image-gallery', 'images': images, 'videos': videos}
